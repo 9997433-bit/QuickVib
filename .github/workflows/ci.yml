@@ -42,6 +42,24 @@ jobs:
       - run: cargo test --workspace --all-targets --locked
       - run: cargo test --workspace --doc --locked
 
+  gui:
+    name: gui build (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-gui-${{ hashFiles('**/Cargo.lock') }}
+      # The window is off by default, so nothing above would notice it rotting. Compiling and
+      # linting it here needs no display: winit loads X11, Wayland and xkbcommon at run time.
+      - run: cargo clippy -p quickvib-ui -p quickvib --features gui --all-targets --locked -- -D warnings
+      - run: cargo test -p quickvib-ui --features gui --locked
+
   deps:
     name: dependency policy
     runs-on: ubuntu-latest
