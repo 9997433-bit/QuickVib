@@ -79,6 +79,10 @@ pub enum BackendKind {
     /// Pure-Rust deterministic signal generator. The default everywhere (D4).
     #[default]
     Mock,
+    /// Samples come from whatever dials into the device port, framed as little-endian `f32`.
+    /// Pure `std` sockets, no native SDK: this is the path a real M300 — or the `m300-sim`
+    /// stand-in — drives.
+    Tcp,
     /// The real M300 vibrometer, via the Windows-only `quickvib-m300` crate.
     M300,
 }
@@ -89,6 +93,7 @@ impl BackendKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Mock => "mock",
+            Self::Tcp => "tcp",
             Self::M300 => "m300",
         }
     }
@@ -106,6 +111,8 @@ impl FromStr for BackendKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.eq_ignore_ascii_case("mock") {
             Ok(Self::Mock)
+        } else if s.eq_ignore_ascii_case("tcp") {
+            Ok(Self::Tcp)
         } else if s.eq_ignore_ascii_case("m300") {
             Ok(Self::M300)
         } else {
@@ -133,8 +140,16 @@ mod tests {
     #[test]
     fn backend_kind_parses_case_insensitively() {
         assert_eq!(BackendKind::from_str("MOCK").unwrap(), BackendKind::Mock);
+        assert_eq!(BackendKind::from_str("TCP").unwrap(), BackendKind::Tcp);
         assert_eq!(BackendKind::from_str("m300").unwrap(), BackendKind::M300);
         assert!(BackendKind::from_str("m400").is_err());
+    }
+
+    #[test]
+    fn backend_kind_spellings_round_trip() {
+        for kind in [BackendKind::Mock, BackendKind::Tcp, BackendKind::M300] {
+            assert_eq!(BackendKind::from_str(kind.as_str()).unwrap(), kind);
+        }
     }
 
     #[test]

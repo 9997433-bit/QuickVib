@@ -62,7 +62,7 @@ pub(crate) fn ser_format<S: Serializer>(v: &ExportFormat, s: S) -> Result<S::Ok,
 }
 
 pub(crate) fn de_backend<'de, D: Deserializer<'de>>(de: D) -> Result<BackendKind, D::Error> {
-    parse_with(de, "a backend name", "mock or m300")
+    parse_with(de, "a backend name", "mock, tcp or m300")
 }
 
 pub(crate) fn ser_backend<S: Serializer>(v: &BackendKind, s: S) -> Result<S::Ok, S::Error> {

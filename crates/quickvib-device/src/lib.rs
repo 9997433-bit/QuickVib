@@ -1,5 +1,5 @@
-//! The device abstraction: one thin trait, a deterministic mock, the little-endian `f32`
-//! framer and the inbound TCP listener.
+//! The device abstraction: one thin trait, a deterministic mock, a socket-fed backend, the
+//! little-endian `f32` framer and the inbound TCP listener.
 //!
 //! Everything in this crate is pure `std` and runs on any platform. That is deliberate
 //! (`docs/PLAN.md` 6.2 and 15): the framing and the accept/disconnect handling carry most of
@@ -31,6 +31,8 @@
 pub mod framer;
 pub mod listener;
 pub mod mock;
+pub mod sink;
+pub mod stream;
 
 mod backend;
 mod error;
@@ -43,3 +45,5 @@ pub use error::DeviceError;
 pub use framer::{Framer, FramerError, READ_BUFFER_BYTES};
 pub use listener::{ConnectionState, InboundDeviceServer};
 pub use mock::{MockBackend, MockFault, MockSignalSpec, SignalComponent};
+pub use sink::{SampleChannel, SampleSink, DEFAULT_CHANNEL_SAMPLES};
+pub use stream::StreamBackend;
