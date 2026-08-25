@@ -184,6 +184,17 @@ dependencies = [
 [[package]]
 name = "quickvib"
 version = "1.0.0"
+dependencies = [
+ "quickvib-core",
+ "quickvib-device",
+ "quickvib-engine",
+ "quickvib-m300",
+ "quickvib-measure",
+ "quickvib-project",
+ "quickvib-scpi",
+ "quickvib-testkit",
+ "tempfile",
+]
 
 [[package]]
 name = "quickvib-core"

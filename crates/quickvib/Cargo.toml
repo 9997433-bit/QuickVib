@@ -1,5 +1,6 @@
 [package]
 name = "quickvib"
+description = "SCPI-over-TCP wrapper around the M300 laser Doppler vibrometer for UTS integration."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +8,36 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = false
+default-run = "quickvib"
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "quickvib"
+path = "src/main.rs"
+
+[lib]
+name = "quickvib"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Enables the Windows-only M300 backend. Selecting `--backend m300` without it is a
+# startup error rather than a silent fallback to the mock.
+m300 = ["dep:quickvib-m300"]
+
+[dependencies]
+quickvib-core.workspace = true
+quickvib-device.workspace = true
+quickvib-engine.workspace = true
+quickvib-measure.workspace = true
+quickvib-project.workspace = true
+quickvib-scpi.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+quickvib-m300 = { path = "../quickvib-m300", version = "1.0.0", optional = true }
+
+[dev-dependencies]
+quickvib-testkit.workspace = true
+tempfile.workspace = true
