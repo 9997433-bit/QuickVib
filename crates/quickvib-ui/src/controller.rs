@@ -417,7 +417,7 @@ mod tests {
     use super::*;
 
     use quickvib_core::{Clock, ExportFormat, NullLogger, SampleUnit, ScpiError, TestClock};
-    use quickvib_device::{DeviceBackend, DeviceOpenOptions, MockBackend};
+    use quickvib_device::{DeviceBackend, DeviceOpenOptions, MockBackend, MockFault};
     use quickvib_engine::{EngineConfig, State};
     use quickvib_project::ProjectStore;
 
@@ -429,8 +429,12 @@ mod tests {
     }"#;
 
     fn engine() -> Arc<Engine> {
+        engine_with(MockFault::None)
+    }
+
+    fn engine_with(fault: MockFault) -> Arc<Engine> {
         let clock: Arc<dyn Clock> = Arc::new(TestClock::at_epoch());
-        let mut backend = MockBackend::new(Arc::clone(&clock));
+        let mut backend = MockBackend::new(Arc::clone(&clock)).with_fault(fault);
         backend
             .open(&DeviceOpenOptions::new(
                 1000.0,
@@ -447,7 +451,17 @@ mod tests {
     }
 
     fn loaded() -> UiController {
-        let engine = engine();
+        with_project(engine())
+    }
+
+    /// A controller whose backend never delivers a sample, so a started run stays in flight
+    /// until it is aborted. An unfaulted mock finishes in well under a millisecond, which on
+    /// a loaded machine can beat the next line of the test.
+    fn stalled() -> UiController {
+        with_project(engine_with(MockFault::Stall))
+    }
+
+    fn with_project(engine: Arc<Engine>) -> UiController {
         engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
         UiController::new(engine)
     }
@@ -530,7 +544,7 @@ mod tests {
 
     #[test]
     fn apply_is_refused_while_a_run_is_in_flight() {
-        let controller = loaded();
+        let controller = stalled();
         controller.start().unwrap();
         let mut controller = controller;
         controller.form_mut().name = "Nope".to_owned();
