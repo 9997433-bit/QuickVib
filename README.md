@@ -161,9 +161,14 @@ rules `MMEM:LOAD:STAT` applies:
 | 设备与采样 · Device and sampling | Sample rate (annotated in kHz as you type), data type (速度 μm/s / 位移 μm / 加速度 m/s²), backend (模拟 / TCP设备 / M300) |
 | 滤波器 · Filters | Low-pass and high-pass cutoff, with the hint **采样率与低通须同档**. Unpinned, the low-pass follows the Nyquist frequency as the sample rate changes; tick **固定截止** to hold a value of your own |
 | 量程 · Measuring ranges | 速度量程 μm/s, 位移量程 μm, 加速度量程 m/s²; the one matching the selected data type is shown in bold |
-| 录制 · Recording | Record duration, watchdog multiplier |
+| 录制 · Recording | Record duration in seconds |
 | 通信端口 · I/O ports | The live listening ports, read-only, above the project ports — see below |
 | 数据导出 · Export | CSV or TXT, directory, CSV preamble, DC removal |
+
+Everything the window does not show — the watchdog multiplier, the capture-size cap, the `*IDN?`
+identity block, the session cap, the allowed-peer list, the mock signal definition — is carried
+through load, edit and save untouched, so opening a project in the window and saving it back never
+silently drops a field.
 
 **应用 / Apply** is the button that matters. It parses and validates every field, and on success
 hands the edited project to the *running* engine — the very same `Arc<Engine>` the SCPI sessions
@@ -872,9 +877,12 @@ schema 中的原始枚举值不会出现在界面上：`velocity_um_s` 显示为
 | 设备与采样 | 采样率（输入时同步标注 kHz）、数据类型（速度 μm/s / 位移 μm / 加速度 m/s²）、数据来源（模拟 / TCP设备 / M300） |
 | 滤波器 | 低通与高通截止频率，并给出提示**采样率与低通须同档**。未固定时，低通随采样率跟随奈奎斯特频率；勾选**固定截止**可锁定为自定义值 |
 | 量程 | 速度量程 μm/s、位移量程 μm、加速度量程 m/s²；与当前数据类型对应的那一项以粗体显示 |
-| 录制 | 录制时长、看门狗倍数 |
+| 录制 | 录制时长（秒） |
 | 通信端口 | 上半部分是只读的实际监听端口，下半部分是项目端口——见下文 |
 | 数据导出 | CSV 或 TXT、目录、CSV 注释头、是否去直流 |
+
+窗口没有显示的字段——看门狗倍数、采集缓冲上限、`*IDN?` 标识块、会话上限、允许的对端地址、mock 信号定
+义——在加载、编辑、保存的整个过程中原样保留，因此用窗口打开一个工程再存回去，不会悄悄丢掉任何字段。
 
 真正关键的按钮是**应用**。它解析并校验每一个字段，成功后把编辑好的工程交给**正在运行**的引擎——也就
 是各个 SCPI 会话所共享的那一个 `Arc<Engine>`，因此紧接着从 5025 端口发来的 `CONF:REC:DUR?` 返回的就是
