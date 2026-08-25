@@ -58,12 +58,12 @@ Round 1 的 fable-A 以 **云端子代理**（`environment=cloud`）派出，模
 
 | ID | 简称 | slug | 环境 | Task ID | 主攻 |
 | --- | --- | --- | --- | --- | --- |
-| R3-fable-A | fable | `claude-fable-5-thinking-xhigh` | local | （派发后填写） | 终验收 / SOTA 打勾 |
-| R3-fable-B | fable | `claude-fable-5-thinking-xhigh` | local | （派发后填写） | 文档与代码交叉核验 |
-| R3-opus-A | opus-fast | `claude-opus-5-thinking-high-fast` | local | （派发后填写） | `--bind` + B7 写超时 |
-| R3-opus-B | opus-fast | `claude-opus-5-thinking-high-fast` | local | （派发后填写） | stop_handle 文档、PLAN、B12–B14 |
-| R3-gpt-A | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | （派发后填写） | 最终测试链 |
-| R3-gpt-B | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | （派发后填写） | bind/超时回归测试 |
+| R3-fable-A | fable | `claude-fable-5-thinking-xhigh` | local | `bc-0fdaaf62-49d1-50d0-be2e-1adf4ab02ad0` | 终验收 / SOTA 打勾 |
+| R3-fable-B | fable | `claude-fable-5-thinking-xhigh` | local | `bc-069ae03d-0cde-5efc-976b-793c320bf6b2` | 文档与代码交叉核验 |
+| R3-opus-A | opus-fast | `claude-opus-5-thinking-high-fast` | local | `bc-cc3a4eba-52f5-5dd0-9111-7ecb52178043` | `--bind` + B7 写超时 |
+| R3-opus-B | opus-fast | `claude-opus-5-thinking-high-fast` | local | `bc-623ad1dd-9903-504f-ad41-0b72f228dc97` | stop_handle 文档、PLAN、B12–B14 |
+| R3-gpt-A | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | `bc-77a339ed-0ee2-54b4-a86c-df02732b14af` | 最终测试链 |
+| R3-gpt-B | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | `bc-5928e460-bb95-5a62-b884-7374c53b7a9d` | bind/超时回归测试 |
 
 ## 产出目录
 
