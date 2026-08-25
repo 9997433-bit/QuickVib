@@ -149,7 +149,7 @@ impl HarnessBuilder {
 
         let options = Options {
             project: self.project_loaded.then(|| project_path.clone()),
-            scpi_port: 0,
+            scpi_port: Some(0),
             device_port: Some(0),
             headless: true,
             backend: self.backend_kind,

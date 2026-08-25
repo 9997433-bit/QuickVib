@@ -60,7 +60,7 @@ fn instrument(project_json: &str) -> (AppHandle, tempfile::TempDir) {
 
     let app = AppBuilder::new(Options {
         project: Some(path),
-        scpi_port: 0,
+        scpi_port: Some(0),
         device_port: Some(0),
         headless: true,
         backend: Some(BackendKind::Tcp),

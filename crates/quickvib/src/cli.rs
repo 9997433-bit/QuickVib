@@ -21,8 +21,8 @@ pub const DEFAULT_DEVICE_PORT: u16 = 9123;
 pub struct Options {
     /// Project to load at startup. `None` means "auto-load the last one".
     pub project: Option<PathBuf>,
-    /// Port the SCPI server listens on.
-    pub scpi_port: u16,
+    /// Port the SCPI server listens on. `None` defers to the project's `server.scpiPort`.
+    pub scpi_port: Option<u16>,
     /// Port the device server listens on. `None` defers to the project's `device.port`.
     pub device_port: Option<u16>,
     /// No interactive console output; structured log lines only.
@@ -39,7 +39,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             project: None,
-            scpi_port: DEFAULT_SCPI_PORT,
+            scpi_port: None,
             device_port: None,
             headless: false,
             backend: None,
@@ -186,7 +186,7 @@ pub fn parse(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
             }
             "--scpi-port" => {
                 let value = take_value("--scpi-port", inline, arguments, &mut index)?;
-                options.scpi_port = parse_port("--scpi-port", &value)?;
+                options.scpi_port = Some(parse_port("--scpi-port", &value)?);
             }
             "--device-port" => {
                 let value = take_value("--device-port", inline, arguments, &mut index)?;
@@ -313,7 +313,7 @@ mod tests {
     fn defaults_match_the_reference() {
         let o = options(&[]);
         assert_eq!(o.project, None);
-        assert_eq!(o.scpi_port, 5025);
+        assert_eq!(o.scpi_port, None);
         assert_eq!(o.device_port, None);
         assert!(!o.headless);
         assert_eq!(o.backend, None);
@@ -333,7 +333,7 @@ mod tests {
             "--headless",
         ]);
         assert_eq!(o.project, Some(PathBuf::from("C:\\Tests\\Test.proj")));
-        assert_eq!(o.scpi_port, 5025);
+        assert_eq!(o.scpi_port, Some(5025));
         assert_eq!(o.device_port, Some(9123));
         assert!(o.headless);
     }
@@ -447,8 +447,8 @@ mod tests {
 
     #[test]
     fn boundary_ports_are_accepted() {
-        assert_eq!(options(&["--scpi-port", "1"]).scpi_port, 1);
-        assert_eq!(options(&["--scpi-port", "65535"]).scpi_port, 65_535);
+        assert_eq!(options(&["--scpi-port", "1"]).scpi_port, Some(1));
+        assert_eq!(options(&["--scpi-port", "65535"]).scpi_port, Some(65_535));
     }
 
     #[test]

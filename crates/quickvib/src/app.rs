@@ -14,7 +14,7 @@ use quickvib_engine::{Engine, EngineConfig};
 use quickvib_project::{LastProjectStore, Project, ProjectStore};
 
 use crate::backend_factory::{self, BackendError};
-use crate::cli::{Options, DEFAULT_DEVICE_PORT};
+use crate::cli::{Options, DEFAULT_DEVICE_PORT, DEFAULT_SCPI_PORT};
 use crate::device_server::{DeviceServer, LinkStats};
 use crate::log::LineLogger;
 use crate::scpi_server::ScpiServer;
@@ -247,7 +247,8 @@ impl AppBuilder {
             .or(project.as_ref().map(|p| p.server.max_sessions))
             .unwrap_or(crate::scpi_server::DEFAULT_MAX_SESSIONS);
 
-        let scpi_addr = format!("{}:{}", self.bind_host, self.options.scpi_port);
+        let scpi_port = resolve_scpi_port(&self.options, project.as_ref());
+        let scpi_addr = format!("{}:{scpi_port}", self.bind_host);
         let scpi = ScpiServer::bind(&scpi_addr, Arc::clone(&engine), Arc::clone(&logger))
             .map_err(|source| StartupError::Bind {
                 what: "SCPI",
@@ -284,6 +285,15 @@ impl AppBuilder {
             headless: self.options.headless,
         })
     }
+}
+
+/// Resolve the SCPI port: `--scpi-port` wins, then the project, then the default.
+#[must_use]
+pub fn resolve_scpi_port(options: &Options, project: Option<&Project>) -> u16 {
+    options
+        .scpi_port
+        .or_else(|| project.map(|p| p.server.scpi_port))
+        .unwrap_or(DEFAULT_SCPI_PORT)
 }
 
 /// Resolve the inbound device port: `--device-port` wins, then the project, then the default.
@@ -608,7 +618,7 @@ mod tests {
 
     fn options() -> Options {
         Options {
-            scpi_port: 0,
+            scpi_port: Some(0),
             device_port: Some(0),
             no_auto_load: true,
             ..Options::default()
@@ -677,12 +687,53 @@ mod tests {
         let squatter = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = squatter.local_addr().unwrap().port();
         let error = builder(Options {
-            scpi_port: port,
+            scpi_port: Some(port),
             ..options()
         })
         .build()
         .unwrap_err();
         assert_eq!(error.exit_code(), EXIT_BIND_FAILURE);
+    }
+
+    #[test]
+    fn the_scpi_port_falls_back_from_the_cli_to_the_project_to_the_default() {
+        let mut project = Project::from_json_str(PROJECT).unwrap();
+        project.server.scpi_port = 5125;
+
+        let silent = Options::default();
+        assert_eq!(resolve_scpi_port(&silent, Some(&project)), 5125);
+        assert_eq!(resolve_scpi_port(&silent, None), DEFAULT_SCPI_PORT);
+
+        let overridden = Options {
+            scpi_port: Some(6000),
+            ..Options::default()
+        };
+        assert_eq!(resolve_scpi_port(&overridden, Some(&project)), 6000);
+    }
+
+    #[test]
+    fn a_project_scpi_port_is_what_the_listener_binds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Ports.proj");
+        let mut project = Project::from_json_str(PROJECT).unwrap();
+        // Port 0 asks the OS for a free one, which is the only port a test may bind.
+        project.server.scpi_port = 1;
+        std::fs::write(&path, project.to_json_string().unwrap()).unwrap();
+
+        let app = builder(Options {
+            project: Some(path),
+            scpi_port: None,
+            device_port: Some(0),
+            no_auto_load: true,
+            ..Options::default()
+        })
+        .build();
+        // Binding port 1 needs privileges this test does not have; the point is that the
+        // project's port — not the 5025 default — is the one that was attempted.
+        match app {
+            Ok(app) => assert_eq!(app.scpi_addr().unwrap().port(), 1),
+            Err(error) => assert_eq!(error.exit_code(), EXIT_BIND_FAILURE),
+        }
     }
 
     #[test]
