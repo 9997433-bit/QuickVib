@@ -66,12 +66,24 @@ pub fn run(controller: UiController, options: GuiOptions) -> Result<(), String> 
         ..eframe::NativeOptions::default()
     };
     let app = QuickVibApp::new(controller, options);
-    eframe::run_native(
-        "quickvib",
-        native,
-        Box::new(|_cc| Ok(Box::new(app) as Box<dyn eframe::App>)),
-    )
-    .map_err(|error| format!("could not open the QuickVib window: {error}"))
+
+    // Not every way a window can fail to open comes back as an `Err`: the X11 keyboard
+    // bindings, for one, panic when their shared library is missing. An instrument that is
+    // already serving the UTS must not be taken down by that, so the event loop is contained
+    // the same way the recording thread is (`docs/PLAN.md` D27) and a panic becomes the same
+    // "carry on without a window" path as a returned error.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        eframe::run_native(
+            "quickvib",
+            native,
+            Box::new(|_cc| Ok(Box::new(app) as Box<dyn eframe::App>)),
+        )
+    }));
+    match outcome {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(format!("could not open the QuickVib window: {error}")),
+        Err(_) => Err("the QuickVib window could not be created on this display".to_owned()),
+    }
 }
 
 /// Which pane of the window is showing.

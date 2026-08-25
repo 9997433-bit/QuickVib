@@ -12,15 +12,28 @@ use quickvib_ui::{window::GuiOptions, UiController};
 
 use crate::app::App;
 
+/// How the windowed run ended.
+#[derive(Debug)]
+pub enum WindowOutcome {
+    /// The operator closed the window; both accept loops have been stopped.
+    Closed,
+    /// No window could be created — a headless session, no compositor, no GPU. The servers
+    /// are still running behind the returned handle, so the caller can go on serving the UTS
+    /// from the console instead of exiting.
+    Unavailable {
+        /// What the windowing system said.
+        reason: String,
+        /// The still-running instrument.
+        handle: crate::AppHandle,
+    },
+}
+
 /// Run the window in the foreground with the servers behind it.
 ///
-/// Returns once the operator closes the window, having stopped both accept loops.
-///
-/// # Errors
-/// The message from the windowing system when no window could be created — a headless
-/// session, no compositor, no GPU. The servers are left running and the returned
-/// [`crate::AppHandle`] is handed back so the caller can keep serving from the console.
-pub fn run(app: App) -> Result<(), (String, crate::AppHandle)> {
+/// Returns once the operator closes the window, or immediately with
+/// [`WindowOutcome::Unavailable`] when this host has no display to put one on.
+#[must_use]
+pub fn run(app: App) -> WindowOutcome {
     let backend = app.backend();
     let handle = app.spawn();
 
@@ -36,8 +49,8 @@ pub fn run(app: App) -> Result<(), (String, crate::AppHandle)> {
     match quickvib_ui::run(controller, options) {
         Ok(()) => {
             handle.shutdown();
-            Ok(())
+            WindowOutcome::Closed
         }
-        Err(error) => Err((error, handle)),
+        Err(reason) => WindowOutcome::Unavailable { reason, handle },
     }
 }

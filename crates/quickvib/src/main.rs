@@ -63,8 +63,8 @@ fn main() {
 /// otherwise the same foreground accept loops as `--headless`.
 #[cfg(feature = "gui")]
 fn serve_with_window(app: quickvib::App) {
-    if let Err((error, handle)) = quickvib::gui::run(app) {
-        eprintln!("quickvib: {error}");
+    if let quickvib::gui::WindowOutcome::Unavailable { reason, handle } = quickvib::gui::run(app) {
+        eprintln!("quickvib: {reason}");
         eprintln!("quickvib: serving from the console; use --headless to skip the window");
         handle.wait();
     }
