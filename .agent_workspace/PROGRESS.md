@@ -28,8 +28,8 @@ Round 1 的 fable-A 以 **云端子代理**（`environment=cloud`）派出，模
 
 | Round | 状态 | 简报 |
 | --- | --- | --- |
-| 1 初始构建与基线探索 | in_progress | （待 6 子代理回报） |
-| 2 靶向重构与深度优化 | pending | |
+| 1 初始构建与基线探索 | completed | `.agent_workspace/ROUND1_BRIEF.md` |
+| 2 靶向重构与深度优化 | in_progress | |
 | 3 SOTA 打磨与最终验收 | pending | |
 
 ## Round 1 派发清单
@@ -42,6 +42,17 @@ Round 1 的 fable-A 以 **云端子代理**（`environment=cloud`）派出，模
 | R1-opus-B | opus-fast | `claude-opus-5-thinking-high-fast` | local | `bc-61b9f271-ce1a-56df-b671-787fc7e8cc99` | 非 engine 路径的缺陷与小优化（UI/project/measure） |
 | R1-gpt-A | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | `bc-78bd0f81-a1e9-5615-89ab-1a2577a5b3ad` | `cargo test` / clippy / 基线探针 |
 | R1-gpt-B | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | `bc-a6a61474-2c9e-5d4a-b588-33a7e5c80d6a` | 边界与回归测试（Apply+FETC、会话、abort） |
+
+## Round 2 派发清单
+
+| ID | 简称 | slug | 环境 | Task ID | 主攻 |
+| --- | --- | --- | --- | --- | --- |
+| R2-fable-A | fable | `claude-fable-5-thinking-xhigh` | local | （派发后填写） | 对照简报复审 R1 修复 + SOTA 验收差距 |
+| R2-fable-B | fable | `claude-fable-5-thinking-xhigh` | local | （派发后填写） | B1–B10 修复方案把关，防过度设计 |
+| R2-opus-A | opus-fast | `claude-opus-5-thinking-high-fast` | local | （派发后填写） | B1 spawn 失败收尾 + B5 TOCTOU |
+| R2-opus-B | opus-fast | `claude-opus-5-thinking-high-fast` | local | （派发后填写） | B4 可中断 pace、B6 错误队列、B3 stop 钩子 |
+| R2-gpt-A | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | （派发后填写） | 全量回归探针 + clippy |
+| R2-gpt-B | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | （派发后填写） | B1/B4/B5/B6 回归测试 |
 
 ## 产出目录
 
