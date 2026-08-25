@@ -29,8 +29,8 @@ Round 1 的 fable-A 以 **云端子代理**（`environment=cloud`）派出，模
 | Round | 状态 | 简报 |
 | --- | --- | --- |
 | 1 初始构建与基线探索 | completed | `.agent_workspace/ROUND1_BRIEF.md` |
-| 2 靶向重构与深度优化 | in_progress | |
-| 3 SOTA 打磨与最终验收 | pending | |
+| 2 靶向重构与深度优化 | completed | `.agent_workspace/ROUND2_BRIEF.md` |
+| 3 SOTA 打磨与最终验收 | in_progress | |
 
 ## Round 1 派发清单
 
@@ -53,6 +53,17 @@ Round 1 的 fable-A 以 **云端子代理**（`environment=cloud`）派出，模
 | R2-opus-B | opus-fast | `claude-opus-5-thinking-high-fast` | local | `bc-f7955524-6e23-5907-9b04-37928c8ab0b8` | B4 可中断 pace、B6 错误队列、B8/B10 |
 | R2-gpt-A | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | `bc-25322d09-0897-5eb8-afa1-a5185a6083aa` | 全量回归探针 + clippy |
 | R2-gpt-B | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | `bc-8e547eb6-8387-515a-8f6d-67e01773b209` | B1/B4/B5/B6 回归测试 |
+
+## Round 3 派发清单
+
+| ID | 简称 | slug | 环境 | Task ID | 主攻 |
+| --- | --- | --- | --- | --- | --- |
+| R3-fable-A | fable | `claude-fable-5-thinking-xhigh` | local | （派发后填写） | 终验收 / SOTA 打勾 |
+| R3-fable-B | fable | `claude-fable-5-thinking-xhigh` | local | （派发后填写） | 文档与代码交叉核验 |
+| R3-opus-A | opus-fast | `claude-opus-5-thinking-high-fast` | local | （派发后填写） | `--bind` + B7 写超时 |
+| R3-opus-B | opus-fast | `claude-opus-5-thinking-high-fast` | local | （派发后填写） | stop_handle 文档、PLAN、B12–B14 |
+| R3-gpt-A | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | （派发后填写） | 最终测试链 |
+| R3-gpt-B | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | （派发后填写） | bind/超时回归测试 |
 
 ## 产出目录
 
