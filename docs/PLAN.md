@@ -1,8 +1,17 @@
 # QuickVib — Analysis and Implementation Plan
 
-> Status: **plan only — no product code written yet.** This document is the review artifact that
-> precedes implementation. Nothing here is compiled; every code block is illustrative pseudocode or a
-> proposed file format, not a source file.
+> Status: **plan only — no product code written yet. Coding has NOT been approved.** This document is
+> the review artifact that precedes implementation. Nothing here is compiled; every code block is
+> illustrative pseudocode or a proposed file format, not a source file. No `Cargo.toml`, no `.rs`
+> file, and no workspace scaffolding exists or will be created until the requester explicitly
+> approves this plan.
+
+> **Language decision — locked: Rust.** An earlier revision of this plan targeted C# / .NET 8. That
+> is **superseded and withdrawn**. The product is built in **Rust** (edition 2021, see D1), shipped as
+> a single self-contained Windows `.exe`, with the entire test suite runnable on Linux via
+> `cargo test`. Every section below — layout, milestones, decision register, traceability, test plan,
+> CI — has been rewritten accordingly. There is no `.sln`, no `.csproj`, no target framework moniker,
+> no P/Invoke and no xUnit anywhere in this plan.
 
 ---
 
@@ -11,9 +20,10 @@
 QuickVib is a small Windows console application that makes an **M300 laser Doppler vibrometer**
 look and behave like a **Keysight-style SCPI instrument** to an existing UTS (unit test system).
 
-The UTS launches `QuickVib.exe` from a Windows command prompt, then opens a TCP socket to it and
+The UTS launches `quickvib.exe` from a Windows command prompt, then opens a TCP socket to it and
 sends SCPI text commands (`*IDN?`, `INIT`, `FETC?`, …) exactly as it would to a bench instrument.
-QuickVib translates those commands into M300 SDK v1.2.0 calls (C ABI, via P/Invoke), records a
+QuickVib translates those commands into M300 SDK v1.2.0 calls — the SDK's existing **C ABI**, bound
+from Rust with **`bindgen`-verified declarations loaded at runtime through `libloading`** — records a
 fixed-duration vibration capture, and returns the samples and derived scalar measurements
 (peak, RMS, peak-to-peak).
 
@@ -25,15 +35,17 @@ Two independent TCP roles exist and must not be confused:
 | **Device server** | QuickVib listens, **M300 connects in** | `9123` | M300 vibrometer |
 
 The M300 is the *inbound* party on the device link — QuickVib is the server on both sides. Sample
-data arrives as a raw **little-endian `float32`** stream.
+data arrives as a raw **little-endian `f32`** stream.
 
 Deliberately narrow scope: QuickVib **records, measures, and exports**. It does **not** decide
 pass/fail, does **not** drive DUT vibration, and does **not** own retry policy — those stay in the
 UTS. There will be **no fake/stub native DLL** committed to the repo; the default backend is a
-pure-managed **mock** so the whole product is developable and testable on Linux with `dotnet test`.
+pure-Rust **mock** so the whole product is developable and testable on Linux with `cargo test`.
 
-Target framework: **.NET 8**. The executable targets Windows for real hardware runs, but the core
-libraries and *all* automated tests are platform-neutral and run on Linux.
+Toolchain: **stable Rust, edition 2021**, MSRV pinned (D1). The shipped artifact targets
+`x86_64-pc-windows-msvc`; the workspace also cross-compiles to `x86_64-pc-windows-gnu` from Linux
+with mingw-w64 (§18.2). All crates except the one thin M300 interop crate are platform-neutral, are
+`#![forbid(unsafe_code)]`, and are fully exercised by `cargo test` on Linux.
 
 ---
 
@@ -50,23 +62,30 @@ libraries and *all* automated tests are platform-neutral and run on Linux.
 ```
 
 * Branch `cursor/build-quickvib-3de8`, branched from `main`.
-* Commits: `51bcdd3 Initial commit`, `02802b7 docs: add QuickVib implementation plan`.
-* **No product code of any kind exists**: no `.sln`, no `.csproj`, no `.cs`, no test projects, no
-  sample data files, no native binaries, no CI workflow, no `.gitignore`/`.editorconfig`.
-* Working tree clean; nothing to remove.
+* Commits: `51bcdd3 Initial commit`, `02802b7 docs: add QuickVib implementation plan`,
+  `cf2a939 docs: expand QuickVib plan with decision register, traceability, and native contract`.
+* **No product code of any kind exists**: no `Cargo.toml`, no `Cargo.lock`, no `.rs` file, no
+  `rust-toolchain.toml`, no `src/` or `crates/` directory, no sample data files, no native binaries,
+  no CI workflow, no `.gitignore`, no `rustfmt.toml`, no `clippy.toml`.
+* Verified immediately before this revision: `git ls-files` returns exactly `README.md` and
+  `docs/PLAN.md`. Working tree clean; nothing to remove.
 
 ### 2.2 Implication
 
-This is a greenfield build. Every convention — layout, naming, nullable settings, analyzer level,
-CI — is ours to choose, so this plan specifies them explicitly rather than inferring them from
-existing code. The first implementation phase must therefore also add the housekeeping files that do
-not yet exist.
+This is a greenfield build. Every convention — crate split, edition, MSRV, lint level, error type
+strategy, CI — is ours to choose, so this plan specifies them explicitly rather than inferring them
+from existing code. The first implementation phase must therefore also add the housekeeping files
+that do not yet exist.
 
 ### 2.3 Working agreement for the planning stage
 
-Until the plan is approved, the repository holds **only** `README.md` and `docs/PLAN.md`. No `.cs`,
-`.csproj`, `.sln`, test file, or sample `.proj` is committed during planning — including the sample
-project file shown in §14, which is displayed for review and created only in Phase 1.
+Until the plan is approved, the repository holds **only** `README.md` and `docs/PLAN.md`. **No
+`Cargo.toml`, no `Cargo.lock`, no `.rs` file, no `rust-toolchain.toml`, no test file, and no sample
+`.proj`** is committed during planning — including the sample project file shown in §14, which is
+displayed for review and created only in Phase 1.
+
+**Approval gate:** Phase 0 (§19) does not begin until the requester says so in writing. This document
+is the thing being reviewed; the code is not started.
 
 **Assumption to confirm:** the M300 SDK v1.2.0 headers/DLL are *not* in the repo and will not be
 committed. The plan treats the native surface as a documented contract that is exercised only on a
@@ -80,11 +99,11 @@ Every line of the product brief mapped to where it is addressed and when it is b
 
 | # | Requirement from brief | Addressed in | Built in |
 | --- | --- | --- | --- |
-| R1 | Windows host executable, launched from `cmd` | §7.1, §13 | Phase 5 |
+| R1 | Windows host executable, launched from `cmd` | §7.1, §13, §18.2 | Phase 5 |
 | R2 | UTS drives it via SCPI-over-TCP like a Keysight instrument | §7.2, §8 | Phase 4–5 |
-| R3 | Wraps M300 SDK v1.2.0 (C ABI) | §10, §11, §15 | Phase 6 |
+| R3 | Wraps M300 SDK v1.2.0 (C ABI) via `bindgen`/`libloading` | §10, §11, §15 | Phase 6 |
 | R4 | Host is TCP server; M300 connects **inbound** on `9123` | §7.3, §5.1 | Phase 6 |
-| R5 | Stream is little-endian `float32` | §7.3, §7.6 | Phase 2 |
+| R5 | Stream is little-endian `f32` | §7.3, §7.6 | Phase 2 |
 | R6 | Units: velocity μm/s, displacement μm, acceleration m/s² | §7.7, §12 | Phase 1 |
 | R7 | UTS owns DUT vibration / pass-fail / retry — not QuickVib | §22 | n/a (excluded) |
 | R8 | Load project (JSON) | §7.5, §12 | Phase 1 |
@@ -96,11 +115,13 @@ Every line of the product brief mapped to where it is addressed and when it is b
 | R14 | CLI `--project --scpi-port --device-port --headless` | §13 | Phase 5 |
 | R15 | Full SCPI surface (IEEE 488.2 + instrument) | §8 | Phase 4 |
 | R16 | Default backend is mock | §7.4, §15, D4 | Phase 2 |
-| R17 | Thin `IDeviceBackend` for mock vs M300 P/Invoke | §10 | Phase 2 + 6 |
-| R18 | .NET 8; tests runnable on Linux | §6, §17, §18 | Phase 0 |
+| R17 | Thin `DeviceBackend` trait for mock vs M300 FFI | §10 | Phase 2 + 6 |
+| R18 | **Rust** (edition 2021, stable); tests runnable on Linux | §6, §17, §18, D1 | Phase 0 |
 | R19 | Sample `Test.proj` described, not yet created | §14, §2.3 | Phase 1 |
 | R20 | Chinese + English README outline | §23 | Phase 7 |
 | R21 | No pass/fail, no DUT vibration, no fake DLL | §22, §15 | n/a (excluded) |
+| R22 | Windows `.exe` produced reproducibly (cross-build and/or native CI) | §18.2 | Phase 0 + 7 |
+| R23 | Zero-or-minimal runtime dependencies, justified | §6.3, D18 | Phase 0 |
 
 ---
 
@@ -109,16 +130,16 @@ Every line of the product brief mapped to where it is addressed and when it is b
 Decisions taken so implementation can begin without waiting on answers. Each has a status:
 **Decided** (committed, change only with cause) or **Default** (a reasonable choice the requester may
 overturn cheaply, with the corresponding question listed in §21.2). Nothing needed for Phases 0–5 is
-undecided; the two genuinely unanswerable items are isolated in §21.1 and only gate Phase 6.
+undecided; the genuinely unanswerable items are isolated in §21.1 and only gate Phase 6.
 
 | ID | Decision | Status | Rationale / reversal cost |
 | --- | --- | --- | --- |
-| D1 | Target `net8.0` for `Core`, `App`, tests; `net8.0-windows` only for the M300 interop assembly | Decided | Keeps Linux CI green; reversal is a TFM edit |
-| D2 | Three source projects (`Core`, `Device.M300`, `App`) + three test projects | Decided | Smallest split that isolates the only Windows-bound code |
+| D1 | **Rust, edition 2021**, stable toolchain, MSRV pinned in `rust-toolchain.toml` and each `Cargo.toml` (`rust-version`) | Decided | Edition 2021 is what every CI image and vendored toolchain already supports; edition 2024 buys nothing this product needs and narrows the usable toolchain floor. Reversal is a one-line `edition` bump per crate plus a `cargo fix --edition` pass. See Q11 |
+| D2 | **Cargo workspace, seven members** (§6.1): `quickvib` (bin) + `quickvib-core`, `-project`, `-measure`, `-device`, `-scpi`, `-engine`, plus the Windows-only `quickvib-m300` excluded from `default-members` | Decided | Smallest split that isolates the only Windows-bound code and keeps compile-time feedback fast; `default-members` is the Cargo analogue of a solution filter, so a plain `cargo test` on Linux never builds the FFI crate |
 | D3 | QuickVib is a **TCP server on both** links; it never dials out | Decided | Directly from the brief |
 | D4 | **Mock is the default backend**, selected unless the project or CLI explicitly says `m300` | Decided | From the brief; also what makes Linux CI possible |
-| D5 | Sample framing (LE `float32` decode) lives in a platform-neutral type taking a `Stream`, not a socket | Decided | Makes the bug-prone part of the M300 path testable on Linux |
-| D6 | SCPI parsing implemented in-house (lexer + command tree), not via a third-party SCPI library | Decided | The surface is ~25 commands; no mature .NET SCPI-server library worth the dependency |
+| D5 | Sample framing (LE `f32` decode) lives in a platform-neutral type driven by `impl Read`, not a socket | Decided | Makes the bug-prone part of the M300 path testable on Linux with a `&[u8]` cursor |
+| D6 | SCPI parsing implemented in-house (lexer + command tree), not via a third-party SCPI crate | Decided | The surface is ~25 commands; no mature Rust SCPI-*server* crate worth the dependency or the API risk |
 | D7 | Error queue uses standard SCPI-99 codes, never invented ones | Decided | UTS error handling already understands them |
 | D8 | Instrument state is **shared** across concurrent SCPI sessions; error queue is global; `*OPC?` is per-session | Default | Mirrors real instruments; see Q7 |
 | D9 | Data from an **aborted** capture is **not** fetchable — `FETC?`/`CALC:*` return `-230` | Default | Conservative; partial data invites silent bad measurements. See Q2 |
@@ -127,13 +148,19 @@ undecided; the two genuinely unanswerable items are isolated in §21.1 and only 
 | D12 | Unit is fixed per project; no runtime `CONF:UNIT` | Default | See Q5 |
 | D13 | Sample rate is declared by the project file; a disagreeing device value is logged, not enforced | Default | See Q9 |
 | D14 | Duration is enforced by **sample count**, not wall-clock, with a wall-clock watchdog as backstop | Decided | Deterministic tests; tolerant of device jitter |
-| D15 | Measurement accumulation in `double` even though samples are `float` | Decided | Avoids precision loss on multi-hundred-thousand-sample captures |
-| D16 | All numeric formatting/parsing uses `CultureInfo.InvariantCulture` | Decided | Comma-decimal locales would corrupt CSV and SCPI responses |
+| D15 | Measurement accumulation in `f64` even though samples are `f32` | Decided | Avoids precision loss on multi-hundred-thousand-sample captures |
+| D16 | Numeric formatting/parsing uses Rust's `core::fmt` / `str::parse`, which are **locale-independent by definition**; no locale API is ever consulted | Decided | Rust has no ambient culture, so the comma-decimal class of bug is structurally absent — but the tests in §17.1 still assert the wire format explicitly |
 | D17 | `#`-prefixed lines are the out-of-band notification namespace (`#REC:DONE`) | Decided | From the brief; `#` cannot begin a normal response in this surface |
-| D18 | Zero third-party runtime dependencies; hand-rolled CLI parser; xUnit (+ optional FluentAssertions) for tests only | Default | UTS-launched exe benefits from a minimal dependency graph. See Q10 |
-| D19 | Clock is injected (`TimeProvider`) everywhere timing matters | Decided | A "5-second" capture must run in milliseconds under test |
-| D20 | No fake `M300Sdk.dll`; the ABI is captured in `docs/M300-NATIVE.md` and verified by a manual Windows smoke checklist | Decided | From the brief |
-| D21 | `TreatWarningsAsErrors`, `Nullable=enable` from Phase 0 | Decided | Cheap at the start, expensive to retrofit |
+| D18 | **Runtime dependencies: `serde` + `serde_json` only** (plus `libloading`, Windows-target-only, for the M300 crate). No async runtime, no CLI crate, no logging crate, no date crate, no error-derive crate. Dev-dependencies: `tempfile` only | Default | §6.3 justifies each inclusion and each exclusion. A UTS-launched exe benefits from a dependency graph a reviewer can read in full. See Q10 and Q13 |
+| D19 | **Blocking `std::net` + OS threads; no `tokio`, no `async`** | Decided | §6.4. The concurrency is ~6 long-lived threads, not 10 000 connections; blocking sockets with read timeouts express every requirement here, and cancellation is `AtomicBool` + `TcpStream::shutdown` rather than a runtime-specific cancellation model |
+| D20 | Time is injected through a `Clock` trait (Rust has no `TimeProvider`); `Instant::now`/`SystemTime::now` are banned outside `quickvib-core::clock`, enforced by `clippy.toml` `disallowed-methods` | Decided | A "5-second" capture must run in milliseconds under test; the lint makes the rule mechanical instead of cultural |
+| D21 | No fake `M300Sdk.dll`; the ABI is captured in `docs/M300-NATIVE.md`, declarations are cross-checked against `bindgen` output on a machine that has the SDK, and correctness is verified by a manual Windows smoke checklist | Decided | From the brief |
+| D22 | `#![forbid(unsafe_code)]` in every crate **except** `quickvib-m300`, which is `#![deny(unsafe_op_in_unsafe_fn)]` and carries a `SAFETY:` comment per `unsafe` block | Decided | Rust's FFI has no marshalling safety net — a wrong signature is UB, not an exception. Confining `unsafe` to one small crate is the whole mitigation (§20) |
+| D23 | Lints: `#![deny(warnings)]` in CI via `RUSTFLAGS=-Dwarnings`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, all from Phase 0 | Decided | Cheap at the start, expensive to retrofit — the direct analogue of the old `TreatWarningsAsErrors` |
+| D24 | Errors: hand-written `enum` error types per crate implementing `std::error::Error` + `Display`; no `thiserror`/`anyhow`. The binary uses a single top-level `AppError` mapped to exit codes | Default | Fewer than a dozen error enums total; the derive macro's cost is a proc-macro dependency in the build graph for boilerplate we write once. See Q13 |
+| D25 | Shipped artifact is `x86_64-pc-windows-msvc` built on a Windows runner with `-C target-feature=+crt-static`; `x86_64-pc-windows-gnu` cross-built from Linux is a developer/CI convenience target, gated but not shipped | Default | §18.2. The MSVC target matches whatever the SDK vendor built against and removes the VC++ redistributable from the deployment checklist. See Q12 and Q-C (SDK bitness) |
+| D26 | `Cargo.lock` **is committed** (this workspace produces a binary, not a library) and CI builds with `--locked` | Decided | Reproducible UTS deployments; a surprise `serde_json` patch bump should never appear between a smoke test and a shipped exe |
+| D27 | Panic strategy stays `unwind`; every long-lived thread body is wrapped so a panic kills one SCPI session, not the process | Decided | `panic = "abort"` would let one malformed command take down an instrument the UTS depends on. See §7.10 |
 
 ---
 
@@ -146,17 +173,17 @@ graph TB
     subgraph Host["Windows test host"]
         UTS["UTS test executive<br/>(owns pass/fail, DUT shaker, retries)"]
 
-        subgraph QV["QuickVib.exe"]
+        subgraph QV["quickvib.exe"]
             CLI["CLI / bootstrapper<br/>--project --scpi-port --device-port --headless"]
             SCPI["SCPI server (TCP listen :5025)<br/>line parser + command dispatch"]
             ENG["Instrument engine<br/>state machine + error queue + OPC"]
             PROJ["Project store<br/>JSON load / save / auto-load-last"]
-            REC["Recording pipeline<br/>ring buffer -> capture buffer"]
+            REC["Recording pipeline<br/>reader thread -> capture buffer"]
             CALC["Measurement calc<br/>peak / RMS / p-p"]
             EXP["Exporter<br/>CSV / TXT"]
-            BE{{"IDeviceBackend"}}
-            MOCK["MockBackend<br/>(default, managed, cross-platform)"]
-            M300["M300Backend<br/>P/Invoke + device TCP listen :9123"]
+            BE{{"dyn DeviceBackend"}}
+            MOCK["MockBackend<br/>(default, pure Rust, cross-platform)"]
+            M300["M300Backend<br/>libloading FFI + device TCP listen :9123"]
         end
     end
 
@@ -172,7 +199,7 @@ graph TB
     REC --> BE
     BE -.-> MOCK
     BE -.-> M300
-    DEV -- "inbound TCP, LE float32 stream" --> M300
+    DEV -- "inbound TCP, LE f32 stream" --> M300
     M300 -- "SDK v1.2.0 C ABI" --> DEV
     PROJ --> FS
     EXP --> FS
@@ -186,7 +213,7 @@ sequenceDiagram
     participant UTS
     participant SCPI as SCPI server
     participant ENG as Engine
-    participant BE as IDeviceBackend
+    participant BE as DeviceBackend
     participant M300
 
     UTS->>SCPI: *IDN?
@@ -197,8 +224,8 @@ sequenceDiagram
     SCPI-->>UTS: 1
     UTS->>SCPI: INIT
     SCPI->>ENG: start recording
-    ENG->>BE: StreamAsync(duration)
-    M300-->>BE: LE float32 samples (streaming)
+    ENG->>BE: stream(request, on_batch) on reader thread
+    M300-->>BE: LE f32 samples (streaming)
     SCPI-->>UTS: (no response; INIT is a command)
     UTS->>SCPI: REC:WAIT?
     Note over ENG: expected sample count reached
@@ -230,195 +257,321 @@ stateDiagram-v2
 `Armed` for a new run discards the previous capture buffer and measurements, so `FETC?` between
 `INIT` and completion returns `-230` rather than stale data from the prior run.
 
+The state enum lives in `quickvib-engine` and transitions go through one `fn transition(&mut self,
+ev: Event) -> Result<State, EngineError>`, so illegal edges are a compile-time-shaped `match` rather
+than scattered `if` checks.
+
 ### 5.4 Threading and concurrency model
 
-| Thread / context | Owns | Rules |
-| --- | --- | --- |
-| SCPI accept loop | `TcpListener` on `--scpi-port` | One `Task` per accepted client; no shared mutable state |
-| SCPI session task (one per client) | Socket read buffer, session-local `*OPC?` flag, output queue | All writes to that socket go through a per-session `SemaphoreSlim` so a notification can never interleave mid-response |
-| Instrument engine | State machine, loaded project, capture buffer, measurements, error queue | Every mutation happens under one engine lock; handlers are short and never block on I/O while holding it |
-| Device accept loop | `TcpListener` on `--device-port` | Accepts the M300's inbound connection; hands the socket to the stream reader |
-| Backend reader task | Socket → framing → `SampleBatch` callback | Single producer for the capture buffer; the only writer to sample storage during `Recording` |
-| Watchdog timer | Wall-clock backstop for a run | Fires once per run; cancels via the run's `CancellationTokenSource` |
+No async runtime (D19). Six kinds of thread, all `std::thread`:
 
-Blocking queries (`REC:WAIT?`, `*OPC?`) never hold the engine lock — they await a
-`TaskCompletionSource` that the engine completes on transition out of `Recording`.
+| Thread | Owns | Rules |
+| --- | --- | --- |
+| SCPI accept loop | `TcpListener` on `--scpi-port` | One spawned thread per accepted client, capped at `max_sessions` (default 8); beyond the cap the connection is accepted, refused with a log line, and closed |
+| SCPI session thread (one per client) | `BufReader<TcpStream>` read half, session-local `*OPC?` flag | All writes to that socket go through a per-session `Mutex<TcpStream>` write half, so a notification can never interleave mid-response |
+| Instrument engine | State machine, loaded project, capture buffer, measurements, error queue | One `Mutex<EngineState>`; handlers are short and never do I/O while holding the guard. Blocking queries wait on a `Condvar` paired with that same mutex |
+| Device accept loop | `TcpListener` on `--device-port` | Accepts the M300's inbound connection; hands the stream to the framer |
+| Backend reader thread | Socket → framing → `SampleBatch` callback | Single producer for the capture buffer; the only writer to sample storage during `Recording` |
+| Watchdog thread | Wall-clock backstop for a run | One per run; sleeps on the run's `Condvar` with `wait_timeout` so completion wakes it early instead of leaving a thread parked |
+
+Cancellation is a `CancelToken { flag: Arc<AtomicBool>, cv: Arc<Condvar> }` plus, for socket reads, a
+`TcpStream::shutdown` on the reader's cloned handle — `ABOR`, the watchdog, and process shutdown all
+go through that one mechanism (the direct replacement for `CancellationToken`).
+
+Blocking queries (`REC:WAIT?`, `*OPC?`) never hold the engine lock while waiting: they use
+`Condvar::wait_timeout_while` on the engine mutex, which releases it for the duration of the wait.
+Because sessions are capped and few, one parked OS thread per blocked query is cheaper than an async
+runtime (D19).
+
+Shared ownership is `Arc<Engine>`; interior mutability is `Mutex`/`Condvar` from `std::sync` only —
+no `parking_lot`, no `crossbeam`. The sample handoff from reader thread to engine is a direct
+callback into the engine under its lock, batched (~4096 samples) so lock traffic stays negligible at
+100 kS/s.
 
 ---
 
-## 6. Solution structure
+## 6. Workspace structure
+
+### 6.1 Cargo layout
 
 ```
-QuickVib/
-├── QuickVib.sln
-├── QuickVib.Linux.slnf              # excludes the Windows-only project, used by Linux CI
-├── .gitignore
-├── .editorconfig
-├── Directory.Build.props            # net8.0, nullable enable, warnings-as-errors, LangVersion latest
-├── README.md                        # bilingual EN + ZH
+quickvib/
+├── Cargo.toml                        # [workspace] members + default-members + [workspace.dependencies] + shared lints
+├── Cargo.lock                        # committed (D26)
+├── rust-toolchain.toml               # channel = "stable", pinned MSRV, components = rustfmt, clippy
+├── rustfmt.toml                      # max_width = 100, edition 2021
+├── clippy.toml                       # disallowed-methods: Instant::now, SystemTime::now (D20)
+├── deny.toml                         # optional: cargo-deny license/advisory gate (Phase 7)
+├── .gitignore                        # /target, *.csv/*.txt under out/
+├── .cargo/config.toml                # cross-compile linker for x86_64-pc-windows-gnu
+├── .github/workflows/ci.yml
+├── README.md                         # bilingual EN + ZH
 ├── docs/
-│   ├── PLAN.md                      # this file
-│   ├── SCPI.md                      # full command reference (expanded from §8)
-│   └── M300-NATIVE.md               # documented native ABI contract, no binaries (§11)
+│   ├── PLAN.md                       # this file
+│   ├── SCPI.md                       # full command reference (expanded from §8)
+│   └── M300-NATIVE.md                # documented native ABI contract, no binaries (§11)
 ├── samples/
-│   └── Test.proj                    # sample JSON project (see §14)
-├── src/
-│   ├── QuickVib.Core/               # net8.0, platform-neutral, no console I/O
-│   │   ├── Instrument/
-│   │   │   ├── InstrumentEngine.cs
-│   │   │   ├── InstrumentState.cs
-│   │   │   ├── ErrorQueue.cs            # SCPI-99 error codes for SYST:ERR?
-│   │   │   └── OperationComplete.cs     # *OPC / *OPC? bookkeeping
-│   │   ├── Scpi/
-│   │   │   ├── ScpiLexer.cs             # header/short-form/long-form matching
-│   │   │   ├── ScpiCommandTree.cs       # registration + dispatch
-│   │   │   ├── ScpiSession.cs           # per-connection state
-│   │   │   └── ScpiResponseFormatter.cs
-│   │   ├── Projects/
-│   │   │   ├── ProjectFile.cs           # POCO for the JSON schema (§12)
-│   │   │   ├── ProjectStore.cs          # load/save/validate
-│   │   │   └── LastProjectTracker.cs    # auto-load-last support
-│   │   ├── Recording/
-│   │   │   ├── RecordingSession.cs
-│   │   │   ├── CaptureBuffer.cs
-│   │   │   └── CaptureResult.cs
-│   │   ├── Measurements/
-│   │   │   ├── MeasurementCalculator.cs # peak / RMS / p-p
-│   │   │   └── MeasurementSet.cs
-│   │   ├── Export/
-│   │   │   ├── ITraceExporter.cs
-│   │   │   ├── CsvExporter.cs
-│   │   │   └── TxtExporter.cs
-│   │   └── Devices/
-│   │       ├── IDeviceBackend.cs        # §10
-│   │       ├── DeviceCapabilities.cs
-│   │       ├── SampleBatch.cs
-│   │       ├── Float32StreamFramer.cs   # LE float32 framing; Stream-based, no native dep (D5)
-│   │       ├── DeviceTcpListener.cs     # pure-BCL inbound listener, loopback-testable
-│   │       └── Mock/MockDeviceBackend.cs
-│   ├── QuickVib.Device.M300/        # net8.0-windows, the ONLY assembly touching the native SDK
-│   │   ├── M300DeviceBackend.cs
-│   │   ├── M300Interop.cs               # [DllImport] declarations only
-│   │   └── M300NativeResolver.cs        # NativeLibrary.SetDllImportResolver
-│   └── QuickVib.App/                # net8.0 console exe, entry point
-│       ├── Program.cs
-│       ├── CommandLineOptions.cs
-│       ├── ScpiTcpServer.cs             # listens :5025, one session per client
-│       ├── ConsoleLog.cs                # structured line logging for --headless (§16)
-│       └── BackendFactory.cs            # mock by default; M300 only on Windows
-└── tests/
-    ├── QuickVib.Core.Tests/         # xUnit, runs on Linux
-    ├── QuickVib.Integration.Tests/  # loopback TCP against the real ScpiTcpServer + mock backend
-    └── QuickVib.TestKit/            # shared fixtures, fake clock, ScpiClient helper
+│   └── Test.proj                     # sample JSON project (see §14)
+└── crates/
+    ├── quickvib/                     # BINARY crate -> quickvib.exe; the composition root
+    │   └── src/
+    │       ├── main.rs               # arg parse -> build engine -> start listeners -> block
+    │       ├── cli.rs                # hand-rolled parser (§13), ~150 lines
+    │       ├── scpi_server.rs        # TcpListener :5025, one thread per session
+    │       ├── device_server.rs      # TcpListener :9123 wiring into quickvib-device
+    │       ├── backend_factory.rs    # mock by default; m300 only on Windows + feature
+    │       └── log.rs                # structured line logger (§16)
+    ├── quickvib-core/                # shared domain vocabulary; no I/O
+    │   └── src/
+    │       ├── lib.rs                # #![forbid(unsafe_code)]
+    │       ├── unit.rs               # SampleUnit
+    │       ├── error.rs              # ScpiError (code + message), SCPI-99 catalogue (§9)
+    │       ├── clock.rs              # Clock trait, SystemClock, TestClock (D20)
+    │       └── cancel.rs             # CancelToken (§5.4)
+    ├── quickvib-project/             # JSON project schema, load/save/validate, last-project record
+    │   └── src/{lib.rs, schema.rs, store.rs, last_project.rs, validate.rs}
+    ├── quickvib-measure/             # peak/RMS/p-p + CSV/TXT export (both operate on the capture buffer)
+    │   └── src/{lib.rs, stats.rs, export/{mod.rs, csv.rs, txt.rs}}
+    ├── quickvib-device/              # backend trait, mock, LE f32 framer, inbound listener
+    │   └── src/
+    │       ├── lib.rs                # DeviceBackend trait, SampleBatch, DeviceCapabilities (§10)
+    │       ├── framer.rs             # LE f32 framing over `impl Read` (D5)
+    │       ├── listener.rs           # inbound TCP accept, loopback-testable
+    │       └── mock.rs               # deterministic seeded signal generator + fault injection
+    ├── quickvib-scpi/                # lexer, command tree, parsed AST, response formatting
+    │   └── src/{lib.rs, lexer.rs, tree.rs, command.rs, format.rs, session.rs}
+    ├── quickvib-engine/              # state machine, error queue, OPC, recording pipeline, dispatch
+    │   └── src/{lib.rs, state.rs, engine.rs, errors.rs, opc.rs, recording.rs, dispatch.rs}
+    └── quickvib-m300/                # WINDOWS-ONLY; the ONLY crate with `unsafe`
+        ├── build.rs                  # bindgen, gated behind the `bindgen` feature (§11)
+        └── src/{lib.rs, ffi.rs, resolver.rs, backend.rs}
 ```
 
-Rationale for the split: `QuickVib.Core` holds everything unit-testable without Windows or hardware
-— note that the socket listener and the byte-stream framer live there deliberately, since they are
-pure BCL and carry most of the M300 path's real risk. `QuickVib.Device.M300` is reduced to P/Invoke
-declarations plus the glue that calls them, so a Linux `dotnet test` never needs it.
-`QuickVib.App` is a thin composition root.
+Integration tests live in `crates/quickvib/tests/` (they drive the real TCP server) and in
+`crates/quickvib-engine/tests/`; unit tests live in `#[cfg(test)] mod tests` next to the code they
+cover, per normal Rust convention. Shared fixtures (fake clock helpers, a tiny `ScpiClient`) live in
+`crates/quickvib-testkit/` as a `publish = false` dev-only member — the eighth member, listed here
+rather than above because it ships nothing.
+
+### 6.2 Dependency graph and why the split is this shape
+
+```
+quickvib (bin)
+ ├── quickvib-engine ── quickvib-scpi ─┐
+ │        ├── quickvib-device ─────────┤
+ │        ├── quickvib-project ────────┼── quickvib-core
+ │        └── quickvib-measure ────────┘
+ └── quickvib-m300 (cfg(windows) + feature "m300") ── quickvib-device, quickvib-core
+```
+
+* **Acyclic by construction.** `quickvib-scpi` is *pure parsing and formatting*: it turns a line into
+  a `Command` value and a `Response` value into bytes. It knows nothing about the engine. The engine
+  depends on it, not the reverse, which is what keeps the parser trivially unit-testable.
+* **`quickvib-core` is the only shared leaf**, holding the vocabulary three crates need
+  (`SampleUnit`, `ScpiError`, `Clock`, `CancelToken`). Keeping it tiny prevents it becoming a dumping
+  ground.
+* **`quickvib-measure` owns export as well as statistics** because both are pure functions over the
+  same `&[f32]` capture buffer, and splitting them would create a crate with one file in it.
+* **`quickvib-device` deliberately holds the framer and the inbound listener** even though they are
+  "the M300 path", because they are pure `std` code and carry most of that path's real risk. What is
+  left for `quickvib-m300` is FFI declarations plus thin glue.
+* **`quickvib-m300` is excluded from `default-members`**, so `cargo build`, `cargo test`, and
+  `cargo clippy` at the workspace root on Linux never touch it. This is the exact role the old
+  solution filter played, and an accidental cross-dependency fails Linux CI immediately rather than
+  on the bench.
+* The bin crate is a composition root only: argument parsing, socket setup, logger, backend
+  selection, exit codes. Nothing in it is business logic, so nothing important is untestable for
+  being in a `main.rs`.
+
+### 6.3 Dependency policy — zero-or-minimal, itemized (D18, R23)
+
+**Runtime dependencies, all crates, total:**
+
+| Crate | Where | Why it earns its place | What we'd write instead |
+| --- | --- | --- | --- |
+| `serde` (derive) + `serde_json` | `quickvib-project` only | A hand-rolled JSON parser is ~600 lines of the exact category of code that produces silent data bugs (escapes, exponents, surrogate pairs, duplicate keys). `serde_json` is the de-facto standard, has no transitive deps beyond `itoa`/`ryu`/`memchr`/`serde`, and gives us forward-compatible "ignore unknown fields" for free via `#[serde(default)]` + `deny_unknown_fields` off | ~600 lines of parser + a lifetime of edge cases |
+| `libloading` | `quickvib-m300` only, `[target.'cfg(windows)'.dependencies]` | Runtime `LoadLibraryW` + `GetProcAddress` with lifetime-checked symbols, so a missing SDK becomes `-241,"Hardware missing"` instead of a process that will not start. Alternative is hand-written `windows-sys` FFI to the loader — more `unsafe`, not less | ~80 lines of `unsafe` loader code |
+
+**Build dependency:** `bindgen`, in `quickvib-m300` only, behind the non-default `bindgen` feature
+(§11). It needs `libclang` and the vendor header, so it never runs in CI; it is a verification tool
+run by a developer on the Windows bench.
+
+**Dev dependencies:** `tempfile` (safe, auto-cleaned temp dirs for export and project-store tests).
+Everything else uses the built-in test harness — `#[test]`, `assert!`, `assert_eq!`, and a local
+`assert_close(a, b, tol)` helper. No `pretty_assertions`, no `rstest`, no `proptest` (a hand-written
+table-driven loop covers the chunk-boundary matrix in §17.1 without a dependency).
+
+**Deliberately excluded, and what replaces each:**
+
+| Not used | Replaced by | Reasoning |
+| --- | --- | --- |
+| `tokio` / `async-std` | `std::net` + `std::thread` (D19, §6.4) | Six long-lived threads, not connection scale |
+| `clap` | ~150-line hand-rolled parser | Nine flags, no subcommands, no shell completion; and the UTS invokes it from a plain `cmd` line where quoting quirks matter more than parser features |
+| `log` / `tracing` + subscriber | ~80-line logger writing the fixed format in §16 | The output format is a contract with the UTS's log scraper, not a convenience; a facade adds indirection and a filter DSL we do not want |
+| `chrono` / `time` | ~30-line `civil_from_days` conversion in `log.rs`, unit-tested against known epochs | We need exactly one thing: `SystemTime` → `YYYY-MM-DDTHH:MM:SS.mmmZ`. No parsing, no zones, no locales, no leap seconds |
+| `thiserror` / `anyhow` | Hand-written error enums (D24) | Under a dozen enums; avoids proc-macro build time in every crate |
+| `dirs` / `directories` | `std::env::var("LOCALAPPDATA")` on Windows, `$XDG_STATE_HOME` else `~/.local/state` on Unix | One path, two branches (§7.5) |
+| `byteorder` | `f32::from_le_bytes` (stable since 1.40) | std covers it exactly, and is correct on any host endianness |
+| `rand` | Xoshiro256++ / Box–Muller in `mock.rs`, ~40 lines, seeded | The mock must be **bit-reproducible across versions and platforms**; pinning our own PRNG is a stronger guarantee than depending on a crate's stability promises |
+| `parking_lot`, `crossbeam` | `std::sync::{Mutex, Condvar}`, `std::sync::mpsc` | std is sufficient at six threads |
+| `csv` | ~60 lines of formatting | Our CSV is three numeric columns with no quoting or escaping cases |
+
+Net runtime graph: **2 direct crates + 4 transitive**, all Windows-independent; `cargo tree` fits on
+a screen and a reviewer can audit it. This is the concrete meaning of "minimal dependencies" for
+R23, and it is enforced from Phase 0 by a CI step that fails if `cargo tree --edges normal --depth 1`
+lists anything not in this table.
+
+### 6.4 Async vs threads — the decision in full (D19)
+
+| Consideration | `tokio` | `std` threads (chosen) |
+| --- | --- | --- |
+| Concurrency actually needed | 2 accept loops + ≤8 sessions + 1 reader + 1 watchdog | same |
+| Cost per blocked `REC:WAIT?` | ~KB of task state | ~8 MB *virtual*, ~64 KB resident stack (configurable via `Builder::stack_size`) |
+| Cancellation | drop the future — but a blocking `read` inside `spawn_blocking` is still not cancellable | `AtomicBool` + `TcpStream::shutdown`, uniform for socket and non-socket waits |
+| Read timeouts | timer wheel + `tokio::time::timeout` | `TcpStream::set_read_timeout` — one syscall, no runtime |
+| Dependency graph | ~25 crates (`mio`, `parking_lot`, `socket2`, …) | zero |
+| Testability | needs `#[tokio::test]` and time pausing | plain `#[test]` + injected `Clock` (D20) |
+| FFI interaction | native callbacks must be bridged onto the runtime | reader thread calls the callback directly |
+
+The deciding factor is the last two rows: the risky code is the framer and the FFI reader, and both
+are easier to reason about and test as straight-line blocking code. If a future requirement brings
+hundreds of concurrent SCPI sessions, the abstraction that would have to change is
+`scpi_server.rs` — the engine, parser, framer, and measurement code are all synchronous pure logic
+either way. That bounds the reversal cost to one file.
 
 ---
 
 ## 7. Component design
 
-### 7.1 CLI / bootstrapper (`QuickVib.App`)
+### 7.1 CLI / bootstrapper (`quickvib` bin crate)
 
-* Parses arguments (see §13). Hand-rolled parser, ~120 lines, zero dependencies (D18): the surface is
-  a handful of flags and the UTS invokes it from a plain `cmd` line where argument quirks matter more
-  than parser features.
+* Parses arguments (see §13). Hand-rolled parser over `std::env::args_os`, ~150 lines, zero
+  dependencies (D18): the surface is a handful of flags and the UTS invokes it from a plain `cmd`
+  line where argument quirks matter more than parser features. `args_os` (not `args`) so a non-UTF-8
+  Windows path in `--project` is reported cleanly rather than panicking.
 * Resolution order for the project to open: `--project <path>` → auto-load-last (if enabled and a
   last-project record exists) → start with no project loaded (SCPI still answers `*IDN?`, `SYST:ERR?`
   and friends; anything needing a project returns `-221`).
 * Selects the backend: **mock is the default**. The real device is opt-in via `--backend m300` or the
-  project's `device.backend` field; `--backend` wins when both are given.
-* Starts the SCPI listener, prints a one-line banner with both ports, then blocks until Ctrl-C or a
-  shutdown request. With `--headless` there is no interactive console UI — only structured log lines
-  (§16), suitable for capture by the UTS.
+  project's `device.backend` field; `--backend` wins when both are given. On a non-Windows host, or
+  in a build without the `m300` feature, `--backend m300` is a startup error, not a silent fallback.
+* Starts the SCPI listener, prints a one-line banner with both ports, then blocks until the process
+  is terminated or an internal shutdown request fires. **Ctrl-C is left to the OS.** A graceful
+  drain would need either a `SetConsoleCtrlHandler` shim (which is `unsafe`, and the bin crate is
+  `forbid(unsafe_code)`) or the `ctrlc` crate (a dependency the D18 stance excludes), so it is
+  raised as Q15 rather than smuggled in. The normal shutdown path for a UTS is `ABOR` followed by
+  closing the socket, which needs no signal handling at all.
 * Exit codes: `0` clean shutdown, `2` bad arguments, `3` port bind failure, `4` project load failure
-  (only when `--project` was explicitly given), `5` backend open failure.
+  (only when `--project` was explicitly given), `5` backend open failure. Set via
+  `std::process::exit` after an explicit flush of stdout/stderr.
 
 ### 7.2 SCPI server
 
 * `TcpListener` on `--scpi-port` (default `5025`, the conventional SCPI-raw socket port).
-* Accepts multiple concurrent clients; **the instrument model is shared** (D8), mirroring a real
-  instrument where two sessions can both talk to one box. Each session gets its own output queue and
-  its own `*OPC?` pending flag; the error queue is shared and global, as on Keysight hardware.
+* Accepts multiple concurrent clients up to `max_sessions` (default 8); **the instrument model is
+  shared** (D8) behind one `Arc<Engine>`, mirroring a real instrument where two sessions can both
+  talk to one box. Each session gets its own write mutex and its own `*OPC?` pending flag; the error
+  queue is shared and global, as on Keysight hardware.
 * **Wire format:** ASCII (UTF-8 compatible), commands terminated by `\n`, `\r\n` tolerated.
-  Responses terminated by `\n`. Maximum accepted input line length 64 KiB; longer input pushes
+  Responses terminated by `\n`. Reading uses `BufReader::read_until(b'\n', &mut Vec<u8>)` on raw
+  bytes rather than `read_line`, so invalid UTF-8 from a misbehaving client is a `-100` rather than
+  an error that kills the session. Maximum accepted input line length 64 KiB; longer input pushes
   `-100,"Command error"` and the line is discarded up to the next terminator.
 * Semicolon-chained compound messages (`*CLS;*IDN?`) are supported by splitting on `;` with standard
   SCPI header-path semantics for leading-colon rules; query responses within one compound message are
   joined with `;` on a single response line.
-* Parsing follows IEEE 488.2 / SCPI-99 essentials: case-insensitive, short and long forms accepted
+* Parsing follows IEEE 488.2 / SCPI-99 essentials: case-insensitive (ASCII-only casefold —
+  `eq_ignore_ascii_case`, never Unicode-aware folding), short and long forms accepted
   (`MEAS` == `MEASure`), optional nodes, `?` suffix denotes a query.
 * Unknown headers push `-113,"Undefined header"` onto the error queue and return nothing (queries
   included — standard behavior; the UTS discovers the fault via `SYST:ERR?`).
 * **Async notification:** when a recording finishes, the engine pushes the literal line `#REC:DONE`
   to every connected session that has notifications enabled. The `#` prefix marks it out-of-band so a
   UTS reading a query response can distinguish it (D17). `REC:WAIT?` is the blocking alternative for
-  clients that prefer strict request/response. Per-session write serialization guarantees a
-  notification never appears in the middle of a response line.
-* Idle sessions are never timed out by QuickVib; the UTS owns its own socket lifetime.
+  clients that prefer strict request/response. The per-session write mutex guarantees a notification
+  never appears in the middle of a response line.
+* Idle sessions are never timed out by QuickVib; the UTS owns its own socket lifetime. A session
+  thread parked in `read_until` exits when the peer closes or when shutdown calls `shutdown(Both)` on
+  its cloned handle.
 
 ### 7.3 Device link
 
-* `DeviceTcpListener` (in `Core`, pure BCL) listens on `--device-port` (default `9123`).
+* `listener.rs` (in `quickvib-device`, pure `std`) listens on `--device-port` (default `9123`).
   **QuickVib is the server; the M300 dials in.**
 * On accept: validate the peer against `device.allowedPeers` if configured (empty list = accept any),
-  then hand the socket to `Float32StreamFramer`.
-* `Float32StreamFramer` reads into a pooled `byte[]`, carries a partial-sample remainder of 1–3 bytes
-  across reads, and converts complete 4-byte groups with `BinaryPrimitives.ReadSingleLittleEndian`
-  (correct on any host endianness).
+  then hand the stream to the framer.
+* `framer.rs` reads into a reused `Vec<u8>` (64 KiB), carries a partial-sample remainder of 1–3 bytes
+  across reads, and converts complete 4-byte groups with `f32::from_le_bytes` — correct on any host
+  endianness, and with `chunks_exact(4)` it is bounds-check-free in the hot loop without `unsafe`.
+  The framer's input is `impl Read`, so tests drive it from a `&[u8]` cursor and from a
+  deliberately pathological reader that yields one byte per call (D5).
 * Only one device connection is honored at a time. A second inbound connection while one is live is
   logged and closed immediately.
 * Reconnection is expected and tolerated: a dropped socket during `Idle` is logged; during `Armed`
-  or `Recording` it fails the capture with `-240,"Hardware error"` and moves to `Aborted`.
+  or `Recording` it fails the capture with `-240,"Hardware error"` and moves to `Aborted`. A
+  `read` returning `Ok(0)` and an `ErrorKind::ConnectionReset` are treated identically.
 * Health is surfaced through `SYST:DEV:CONN?`.
 
 ### 7.4 Backends
 
-`IDeviceBackend` (§10) is deliberately thin: connect, describe capabilities, start/stop a stream,
+`DeviceBackend` (§10) is deliberately thin: connect, describe capabilities, start/stop a stream,
 push sample batches to a consumer. Everything above it — buffering, duration enforcement, unit
-bookkeeping, measurement math, export — lives in `Core` and is therefore shared and tested once.
+bookkeeping, measurement math, export — lives in the platform-neutral crates and is therefore shared
+and tested once.
 
-* **`MockDeviceBackend` (default).** Generates a deterministic signal from configurable sine
-  components (frequency, amplitude, phase) plus optional Gaussian noise from a seeded PRNG, at the
-  project's sample rate. Uses the injected `TimeProvider` (D19) so a "5-second" capture runs in
-  milliseconds under test. Because the peak/RMS/p-p of a synthesized sine are analytically known, the
-  mock doubles as the oracle for measurement-math tests. Fault injection modes (stall, link-drop,
-  short-stream) exist for negative testing.
-* **`M300DeviceBackend`.** Wraps the SDK v1.2.0 C ABI plus the inbound socket. Built only for
-  `net8.0-windows`; constructed only when explicitly selected *and* running on Windows.
+* **`MockBackend` (default).** Generates a deterministic signal from configurable sine components
+  (frequency, amplitude, phase) plus optional Gaussian noise from a seeded, **vendored** PRNG
+  (Xoshiro256++ with Box–Muller, ~40 lines — so the byte-for-byte output is our guarantee, not a
+  dependency's). Uses the injected `Clock` (D20) so a "5-second" capture runs in milliseconds under
+  test. Because the peak/RMS/p-p of a synthesized sine are analytically known, the mock doubles as
+  the oracle for measurement-math tests. Fault-injection modes (stall, link-drop, short-stream) exist
+  for negative testing.
+* **`M300Backend`.** Wraps the SDK v1.2.0 C ABI plus the inbound socket. Lives in `quickvib-m300`,
+  compiled only for Windows targets with the `m300` feature on, and constructed only when explicitly
+  selected *and* running on Windows.
+
+Selection is `Box<dyn DeviceBackend + Send>` (dynamic dispatch): the call rate is one batch per
+~4096 samples, so the virtual call is free, and a trait object keeps `backend_factory.rs` from
+becoming a generic-parameter cascade through the engine.
 
 ### 7.5 Project model
 
-* `ProjectStore.Load(path)` deserializes with `System.Text.Json`, then validates (sample rate > 0,
-  duration in range, known unit, known backend, known format). Validation failures become
-  `-224,"Illegal parameter value"` with a human-readable detail in the log.
+* `ProjectStore::load(path)` deserializes with `serde_json` into a `#[derive(Deserialize)]` schema
+  struct, then validates (sample rate > 0, duration in range, known unit, known backend, known
+  format). Unknown properties are ignored (no `deny_unknown_fields`) for forward compatibility;
+  missing optional fields come from `#[serde(default = "…")]`. Validation failures become
+  `-224,"Illegal parameter value"` with a human-readable detail in the log; serde's own error carries
+  a line/column that goes into the log line.
+* Enum-valued fields (`unit`, `backend`, `format`) are `#[derive(Deserialize)]` Rust enums with
+  `#[serde(rename_all)]`, so an invalid value is rejected by the parser rather than by an
+  after-the-fact string comparison.
 * `MMEM:STOR:STAT` writes the current in-memory project — including any runtime `CONF:REC:DUR` or
-  `FORM` override — back to disk as indented JSON.
+  `FORM` override — back to disk with `serde_json::to_writer_pretty`.
 * **Auto-load-last:** the path of the most recently loaded or saved project is persisted to
-  `%LOCALAPPDATA%\QuickVib\last-project.json` (on Linux, `$XDG_STATE_HOME` or `~/.local/state`).
-  `MMEM:LOAD:AUTO` re-runs that resolution on demand; startup does it implicitly unless `--project`
-  was supplied or `--no-auto-load` was passed. If the recorded path no longer exists it is skipped
-  and logged, not treated as fatal at startup.
+  `%LOCALAPPDATA%\QuickVib\last-project.json` on Windows (from `std::env::var("LOCALAPPDATA")`), and
+  to `$XDG_STATE_HOME/quickvib/` or `~/.local/state/quickvib/` on Unix — two branches of `std::env`,
+  no `dirs` crate. `MMEM:LOAD:AUTO` re-runs that resolution on demand; startup does it implicitly
+  unless `--project` was supplied or `--no-auto-load` was passed. If the recorded path no longer
+  exists it is skipped and logged, not treated as fatal at startup.
 
 ### 7.6 Recording pipeline
 
 1. `INIT` (or `REC:STAR`) validates that a project is loaded and the device is connected, discards
    any previous capture, and transitions to `Armed`.
-2. The pipeline computes `expectedSamples = ceil(durationSeconds × sampleRateHz)` and allocates the
-   capture buffer up front, giving a bounded, predictable memory footprint (see §7.9).
-3. Sample batches from the backend are appended by the single reader task. The first batch flips
-   `Armed → Recording` and stamps `t0`.
-4. On reaching `expectedSamples` the session completes: trailing samples in the same batch are
+2. The pipeline computes `expected_samples = (duration_s * rate_hz).ceil() as usize` and allocates
+   the capture buffer with `Vec::with_capacity` up front, giving a bounded, predictable memory
+   footprint (see §7.9). The allocation is attempted before arming so an out-of-memory condition is a
+   clean `-222` rather than an abort.
+3. Sample batches from the backend are appended by the single reader thread via `extend_from_slice`.
+   The first batch flips `Armed → Recording` and stamps `t0` from the injected `Clock`.
+4. On reaching `expected_samples` the run completes: trailing samples in the same batch are
    discarded, measurements are computed eagerly (one O(n) pass), the OPC bit is set, `REC:WAIT?`
-   waiters are released, and `#REC:DONE` is fanned out.
-5. A watchdog of `duration × timeoutMultiplier + 1 s` (default multiplier `2.0`) aborts a stalled
-   capture with `-365,"Time out error"` rather than hanging the UTS forever.
-6. `ABOR` cancels via `CancellationToken` and marks `Aborted`. Per D9, the partial samples are
-   discarded rather than made fetchable.
+   waiters are released with `Condvar::notify_all`, and `#REC:DONE` is fanned out.
+5. A watchdog of `duration * timeout_multiplier + 1 s` aborts a stalled capture with
+   `-365,"Time out error"` rather than hanging the UTS forever. Implemented as
+   `Condvar::wait_timeout` against the injected `Clock`, so it is instant under test.
+6. `ABOR` sets the `CancelToken` and shuts the device socket down, then marks `Aborted`. Per D9, the
+   partial samples are discarded rather than made fetchable.
 
 ### 7.7 Measurement calculation
 
@@ -430,29 +583,42 @@ Single pass over the capture buffer producing:
 | RMS | `sqrt( (1/N) · Σ x_i² )` |
 | Peak-to-peak | `max(x_i) − min(x_i)` |
 
-Accumulate in `double` even though samples are `float` (D15). Optional DC removal (subtract the mean
-before peak and RMS) is the project-level flag `measurement.removeDc`, defaulting to `false` so the
-raw instrument reading is reported unless explicitly requested; p-p is unaffected by DC removal by
-definition. Units follow the project's configured channel unit: velocity **μm/s**, displacement
-**μm**, acceleration **m/s²**. QuickVib performs **no unit conversion** — it reports samples in the
-unit the device is configured for and labels them accordingly.
+Accumulate in `f64` even though samples are `f32` (D15). The kernel is
+`fn compute(samples: &[f32], opts: MeasureOptions) -> MeasurementSet` — a pure function with no I/O,
+which is why it is the cheapest thing in the product to test exhaustively. Min/max use explicit
+comparison rather than `f32::max`, so `NaN` propagation is our documented choice rather than an
+accident of which std method was reached for.
 
-Edge cases: `N = 0` cannot occur for a completed capture (a completed run has `expectedSamples > 0`);
-`NaN`/`Inf` samples are propagated rather than filtered, and their presence is logged as a warning
-once per run.
+Optional DC removal (subtract the mean before peak and RMS) is the project-level flag
+`measurement.removeDc`, defaulting to `false` so the raw instrument reading is reported unless
+explicitly requested; p-p is unaffected by DC removal by definition. Units follow the project's
+configured channel unit: velocity **μm/s**, displacement **μm**, acceleration **m/s²**. QuickVib
+performs **no unit conversion** — it reports samples in the unit the device is configured for and
+labels them accordingly.
+
+Edge cases: `N = 0` cannot occur for a completed capture (a completed run has `expected_samples > 0`,
+and the type is a `NonEmptyCapture` newtype so the empty case is unrepresentable rather than
+untested); `NaN`/`Inf` samples are propagated rather than filtered, and their presence is logged as a
+warning once per run.
 
 ### 7.8 Export
 
 * `FORM CSV|TXT` selects the active format; `MMEM:STOR:TRAC "<path>"` writes the last capture.
 * **CSV:** an optional comment preamble (`# project`, `# timestamp`, `# sampleRateHz`, `# unit`,
   `# samples`, `# durationSeconds`), then the header row `index,time_s,value`, then one row per
-  sample. Invariant culture, `G9` round-trip formatting for `float`, `\r\n` line endings for Windows
-  tooling friendliness. `export.includeHeader=false` suppresses the preamble and header row.
+  sample. Values are written with `{}` on `f32`, which in Rust emits the **shortest representation
+  that round-trips** — the same guarantee the old plan bought with `G9`, without a format string, and
+  locale-independent by construction (D16). `\r\n` line endings for Windows tooling friendliness.
+  `export.includeHeader=false` suppresses the preamble and header row.
 * **TXT:** one value per line, no header — the minimal form for scripts that just want numbers.
+* All writes go through a `BufWriter` with a 64 KiB buffer; at 500 000 rows the difference between
+  buffered and unbuffered is the difference between ~0.2 s and ~20 s.
 * Paths are resolved relative to `export.directory` when not absolute. Missing directories are
-  created. Existing files are overwritten (documented behavior, not an error).
-* Writes go to a temporary file in the target directory and are then moved into place, so a UTS that
-  polls for the file never observes a half-written CSV.
+  created with `create_dir_all`. Existing files are overwritten (documented behavior, not an error).
+* Writes go to a temporary file in the target directory, are `flush`ed **and** `sync_all`ed, and are
+  then `fs::rename`d into place, so a UTS that polls for the file never observes a half-written CSV.
+  (`rename` is atomic within a directory on both NTFS and ext4; the temp file must therefore be
+  created in the *target* directory, not `/tmp`.)
 
 ### 7.9 Resource budget
 
@@ -460,14 +626,36 @@ For the sample project (100 kS/s, 5 s, single channel):
 
 | Item | Size | Note |
 | --- | --- | --- |
-| Capture buffer | 500 000 × 4 B ≈ **2 MB** | Allocated once per run, reused if the shape is unchanged |
-| Socket read buffers | 64 KiB pooled | `ArrayPool<byte>` |
-| `FETC?` ASCII response | ≈ **6 MB** on one line | Streamed to the socket, not materialized as a single string — see the risk in §20 |
-| CSV export | ≈ **15 MB** | Written streaming |
+| Capture buffer | 500 000 × 4 B ≈ **2 MB** | One `Vec<f32>` with capacity reserved at `INIT`; reused across runs when the shape is unchanged |
+| Socket read buffers | 64 KiB per link | Reused `Vec<u8>`, no pool needed at this thread count |
+| `FETC?` ASCII response | ≈ **6 MB** on one line | Written incrementally into a `BufWriter<TcpStream>`, never materialized as one `String` — see the risk in §20 |
+| CSV export | ≈ **15 MB** | Written streaming through a `BufWriter` |
+| Per-thread stack | 8 MB virtual × ≤11 threads | Resident cost is a few hundred KB; `Builder::stack_size(256 * 1024)` on session threads if it ever matters |
 
 A 3600 s capture at 100 kS/s would be 1.44 GB, which exceeds what a single buffer should hold; the
 duration ceiling interacts with sample rate, so `INIT` rejects runs whose
-`expectedSamples × 4 B` exceeds a configurable cap (default 512 MB) with `-222,"Data out of range"`.
+`expected_samples * 4` exceeds a configurable cap (default 512 MB) with `-222,"Data out of range"`.
+
+### 7.10 Failure containment (Rust-specific)
+
+Rust has no exceptions, so the failure model is explicit:
+
+* **`Result` everywhere in library crates.** No `unwrap`/`expect` outside tests and outside
+  `main.rs`'s startup path; enforced by `clippy::unwrap_used` and `clippy::expect_used` denied at
+  workspace level for the library crates.
+* **No panics as control flow.** A malformed SCPI line is a `-100`, not a panic. Indexing is by
+  `get`/`chunks_exact`, and arithmetic that could overflow uses checked forms (`checked_mul` on the
+  capture-size guard, notably — a `duration * rate` overflow must produce `-222`, not a debug-mode
+  panic and a release-mode wrap).
+* **Panic containment (D27).** Each session thread body runs inside
+  `std::panic::catch_unwind(AssertUnwindSafe(…))`. A panic logs at `error` with the offending command,
+  pushes `-100` to the error queue, and closes only that session. A panic in the reader thread aborts
+  the run with `-240`. The process survives; a UTS mid-sequence sees an error code instead of a dead
+  socket.
+* **Poisoned mutexes.** Because panics are caught, a `Mutex` can be poisoned. Every lock site uses
+  `.lock().unwrap_or_else(PoisonError::into_inner)` with a comment: the engine state is a plain data
+  struct with no invariant that a mid-mutation panic could break beyond what the state machine
+  already re-validates.
 
 ---
 
@@ -481,12 +669,12 @@ named in the brief; see Q8 in §21.
 
 | Command | Type | Response | Behavior |
 | --- | --- | --- | --- |
-| `*IDN?` | Query | `QuickVib,M300-SCPI,<serial>,<fw>` | Four comma-separated fields: manufacturer, model, serial, firmware/app version. All four are **configurable** via the project's `identity` block so the UTS's expected-ID check can be satisfied. Serial defaults to the device serial when connected, else `0`. |
+| `*IDN?` | Query | `QuickVib,M300-SCPI,<serial>,<fw>` | Four comma-separated fields: manufacturer, model, serial, firmware/app version. All four are **configurable** via the project's `identity` block so the UTS's expected-ID check can be satisfied. Serial defaults to the device serial when connected, else `0`. Version default comes from `env!("CARGO_PKG_VERSION")`. |
 | `*RST` | Command | — | Abort any recording, discard capture data, reset duration and format to the loaded project's values, keep the loaded project, clear the error queue. Returns to `Idle`. |
 | `*CLS` | Command | — | Clear the error queue and status/event registers. Does not touch data or state. |
 | `*OPC` | Command | — | Sets the OPC bit in the standard event register once all pending overlapped operations (i.e. an active recording) complete. |
 | `*OPC?` | Query | `1` | Blocks until pending operations complete, then returns `1`. Bounded by the run watchdog, so it cannot hang past `duration × multiplier + 1 s`. |
-| `SYST:ERR?` | Query | `<code>,"<message>"` | Pops the oldest entry from the FIFO error queue. Returns `0,"No error"` when empty. Queue depth 32; overflow replaces the last entry with `-350,"Queue overflow"`. |
+| `SYST:ERR?` | Query | `<code>,"<message>"` | Pops the oldest entry from the FIFO error queue (`VecDeque`, bounded). Returns `0,"No error"` when empty. Queue depth 32; overflow replaces the last entry with `-350,"Queue overflow"`. |
 
 ### 8.2 Project / mass-memory
 
@@ -503,7 +691,7 @@ named in the brief; see Q8 in §21.
 | Command | Type | Response | Behavior |
 | --- | --- | --- | --- |
 | `CONF:REC:DUR <seconds>` | Command | — | Set record duration in seconds (float). Range `(0, 3600]`, further bounded by the buffer cap in §7.9; out of range → `-222,"Data out of range"`. Overrides the project value for subsequent runs; persisted only by `MMEM:STOR:STAT`. `-221` while recording. |
-| `CONF:REC:DUR?` | Query | `5.000` | Current duration, three decimals, invariant culture. |
+| `CONF:REC:DUR?` | Query | `5.000` | Current duration, three decimals (`{:.3}`). |
 | `FORM CSV\|TXT` | Command | — | Select export format. Unknown value → `-224`. |
 | `FORM?` | Query | `CSV` | Active format. |
 
@@ -521,7 +709,7 @@ named in the brief; see Q8 in §21.
 
 | Command | Type | Response | Behavior |
 | --- | --- | --- | --- |
-| `FETC?` | Query | `v1,v2,…,vN` | Comma-separated ASCII samples from the last completed capture, `G9` invariant formatting, streamed to the socket. `-230,"Data corrupt or stale"` if there is no completed capture. |
+| `FETC?` | Query | `v1,v2,…,vN` | Comma-separated ASCII samples from the last completed capture, shortest round-trip `f32` formatting, streamed to the socket through a `BufWriter`. `-230,"Data corrupt or stale"` if there is no completed capture. |
 | `TRAC:DATA?` | Query | same as `FETC?` | Alias for UTS scripts using the trace vocabulary. |
 | `TRAC:POIN?` | Query | `500000` | *(proposed)* Sample count of the last completed capture, so the UTS can size its read buffer before `FETC?`. `-230` if no capture. |
 
@@ -535,8 +723,8 @@ named in the brief; see Q8 in §21.
 | `CALC:MEAS:ALL?` | Query | `12.3400,4.5600,24.6800` | Peak, RMS, p-p in that fixed order — one round trip instead of three. |
 
 All four return `-230,"Data corrupt or stale"` when no completed capture exists. Numeric format is
-invariant-culture fixed-point with 4 decimals by default, configurable via
-`measurement.responseFormat`.
+fixed-point with 4 decimals by default (`{:.*}` with the width from `measurement.responseDecimals`;
+see the schema change noted in §12).
 
 ### 8.7 System / device
 
@@ -557,19 +745,21 @@ invariant-culture fixed-point with 4 decimals by default, configurable via
 ## 9. Error code catalogue
 
 Standard SCPI-99 codes are reused rather than invented (D7), so the UTS's existing error handling
-works unchanged.
+works unchanged. Represented in `quickvib-core::error` as a `#[non_exhaustive] enum ScpiError` with
+`const fn code(&self) -> i16` and `const fn message(&self) -> &'static str`, so the table below and
+the code cannot drift.
 
 | Code | Message | Raised when |
 | --- | --- | --- |
 | `0` | `No error` | Queue empty |
-| `-100` | `Command error` | Malformed message, over-long line |
+| `-100` | `Command error` | Malformed message, over-long line, non-UTF-8 input, contained panic |
 | `-113` | `Undefined header` | Unknown command |
 | `-221` | `Settings conflict` | No project loaded / already recording / config change during a run |
-| `-222` | `Data out of range` | Duration outside `(0, 3600]` or over the buffer cap |
-| `-224` | `Illegal parameter value` | Bad `FORM` value, invalid project schema |
+| `-222` | `Data out of range` | Duration outside `(0, 3600]`, over the buffer cap, or a `checked_mul` overflow on the size guard |
+| `-224` | `Illegal parameter value` | Bad `FORM` value, invalid project schema, serde deserialization failure |
 | `-230` | `Data corrupt or stale` | Query for data with no completed capture |
-| `-240` | `Hardware error` | Device link dropped during `Armed`/`Recording` |
-| `-241` | `Hardware missing` | No device connected at `INIT`; SDK library not found |
+| `-240` | `Hardware error` | Device link dropped during `Armed`/`Recording`; non-zero SDK return code |
+| `-241` | `Hardware missing` | No device connected at `INIT`; SDK library not found by `libloading`; required symbol absent |
 | `-256` | `File name not found` | Project file missing; no auto-load record |
 | `-257` | `File name error` | Path invalid or not writable |
 | `-350` | `Queue overflow` | More than 32 unread errors |
@@ -577,84 +767,121 @@ works unchanged.
 
 ---
 
-## 10. `IDeviceBackend` interface sketch
+## 10. `DeviceBackend` trait sketch
 
-> Pseudocode / interface shape only. Not a source file. Names and signatures are proposals for
+> Pseudocode / trait shape only. **Not a source file.** Names and signatures are proposals for
 > review.
 
 ```
-namespace QuickVib.Core.Devices
+// crates/quickvib-device/src/lib.rs   (ILLUSTRATIVE — not written yet)
 
 /// Unit of the sample stream, as configured on the device.
-enum SampleUnit { VelocityMicrometersPerSecond, DisplacementMicrometers, AccelerationMetersPerSecondSquared }
+enum SampleUnit { VelocityUmPerSec, DisplacementUm, AccelerationMPerSec2 }
 
 /// Immutable description of what the connected device can do.
-record DeviceCapabilities(
-    string     Model,
-    string     SerialNumber,
-    string     FirmwareVersion,
-    double     SampleRateHz,
-    SampleUnit Unit,
-    double     MaxRecordSeconds)
-
-/// One contiguous chunk of samples, already converted from LE float32 to host float.
-readonly struct SampleBatch(ReadOnlyMemory<float> Samples, long StartIndex, DateTimeOffset ArrivedAt)
-
-interface IDeviceBackend : IAsyncDisposable
-{
-    /// True once the transport is live. For M300: an inbound socket has been accepted.
-    /// For mock: true after OpenAsync. Backs SYST:DEV:CONN?.
-    bool IsConnected { get; }
-
-    /// Raised on connect/disconnect so the engine can update state and log.
-    event EventHandler<DeviceConnectionChangedEventArgs> ConnectionChanged;
-
-    /// Bring up the transport. For M300 this starts the :9123 listener and, if the SDK requires it,
-    /// calls the native open/handshake entry points. Idempotent.
-    Task OpenAsync(DeviceOpenOptions options, CancellationToken ct);
-
-    /// Capabilities of the currently connected device. Throws DeviceNotConnectedException if !IsConnected.
-    Task<DeviceCapabilities> GetCapabilitiesAsync(CancellationToken ct);
-
-    /// Begin streaming. Batches are delivered to onBatch on a background reader; the returned
-    /// task completes when the requested sample count has been delivered, the token is
-    /// cancelled, or the link fails.
-    Task<StreamOutcome> StreamAsync(
-        StreamRequest request,               // duration, expected sample count, unit
-        Func<SampleBatch, CancellationToken, ValueTask> onBatch,
-        CancellationToken ct);
-
-    /// Stop an in-flight stream promptly; safe to call when nothing is running.
-    Task StopAsync(CancellationToken ct);
+struct DeviceCapabilities {
+    model: String,
+    serial_number: String,
+    firmware_version: String,
+    sample_rate_hz: f64,
+    unit: SampleUnit,
+    max_record_seconds: f64,
 }
 
+/// One contiguous chunk of samples, already converted from LE f32 to host f32.
+/// Borrowed, not owned: the reader thread reuses its buffer, so no allocation per batch.
+struct SampleBatch<'a> { samples: &'a [f32], start_index: u64, arrived_at: Timestamp }
+
 enum StreamOutcome { Completed, Cancelled, LinkLost, TimedOut }
+
+struct StreamRequest { duration: Duration, expected_samples: u64, unit: SampleUnit }
+
+trait DeviceBackend: Send {
+    /// True once the transport is live. For M300: an inbound socket has been accepted.
+    /// For mock: true after `open`. Backs SYST:DEV:CONN?.
+    fn is_connected(&self) -> bool;
+
+    /// Bring up the transport. For M300 this starts the :9123 listener and, if the SDK
+    /// requires it, calls the native open/handshake entry points. Idempotent.
+    fn open(&mut self, opts: &DeviceOpenOptions) -> Result<(), DeviceError>;
+
+    /// Capabilities of the currently connected device.
+    /// Err(DeviceError::NotConnected) if !is_connected().
+    fn capabilities(&self) -> Result<DeviceCapabilities, DeviceError>;
+
+    /// Block on this (reader) thread, delivering batches to `on_batch`, until the requested
+    /// sample count has been delivered, the token is cancelled, or the link fails.
+    fn stream(
+        &mut self,
+        request: &StreamRequest,
+        on_batch: &mut dyn FnMut(SampleBatch<'_>) -> Result<(), DeviceError>,
+        cancel: &CancelToken,
+    ) -> Result<StreamOutcome, DeviceError>;
+
+    /// Stop an in-flight stream promptly from another thread; safe to call when idle.
+    fn stop(&self) -> Result<(), DeviceError>;
+}
+
+/// Connection transitions are published through this, replacing the C# `event`.
+trait ConnectionObserver: Send + Sync {
+    fn on_connection_changed(&self, connected: bool, peer: Option<SocketAddr>);
+}
 ```
 
-Design notes:
+Design notes, and how the shape changed from the .NET sketch:
 
 * **Push, not pull.** A callback avoids an intermediate queue for the M300's socket reader and keeps
-  the mock trivial.
-* **No file, project, or SCPI concepts leak in.** The backend knows only about samples.
-* **Cancellation is first-class**, so `ABOR` and the watchdog share one mechanism.
-* **`IAsyncDisposable`** because both implementations own sockets and, for M300, native handles.
-* **Seven members total.** If the interface grows past this, the extra concern probably belongs in
-  `Core` instead.
+  the mock trivial. In Rust it is `&mut dyn FnMut`, so no boxing and no allocation per batch.
+* **Borrowed batches.** `SampleBatch<'a>` borrows the reader's buffer rather than owning a
+  `ReadOnlyMemory<float>`; the engine copies into the capture `Vec` inside the callback. That removes
+  the per-batch allocation the .NET shape implied and makes buffer reuse a type-level guarantee.
+* **`stream` is blocking, not `async`** (D19): it runs on the reader thread and returns the outcome.
+  Cancellation is the explicit `&CancelToken` parameter rather than an ambient token.
+* **`stop(&self)`** takes `&self` (not `&mut self`) precisely because it must be callable from the
+  `ABOR` handler on another thread while `stream` holds `&mut self`; internally it is an atomic flag
+  plus a socket shutdown handle.
+* **No `event`** — Rust has none. Connection transitions go through a `ConnectionObserver` trait
+  object the engine registers once, which is also easier to assert on in tests.
+* **No `IAsyncDisposable`** — `Drop` handles socket and native-handle teardown deterministically, and
+  because `Drop` cannot return errors, an explicit `close()` is available for the paths that want to
+  report failure.
+* **`Send` but not `Sync`** on the trait: exactly one thread streams; sharing is the engine's job.
+* **Six methods total.** If the trait grows past this, the extra concern probably belongs in
+  `quickvib-engine` instead.
 
 ---
 
 ## 11. M300 native contract (outline for `docs/M300-NATIVE.md`)
 
 This document is the review artifact standing in for the part that cannot be tested in CI. It is
-written in Phase 6 against the real SDK v1.2.0 header, but its outline is fixed now:
+written in Phase 6 against the real SDK v1.2.0 header, but its outline is fixed now.
 
-1. **Deployment** — where `M300Sdk.dll` (name to confirm) must live: next to `QuickVib.exe`, or a
-   directory given by `device.sdkPath` / `QUICKVIB_M300_SDK` — resolved through
-   `NativeLibrary.SetDllImportResolver` so a missing SDK yields `-241,"Hardware missing"` plus an
-   actionable log line rather than a raw `DllNotFoundException`.
-2. **Calling convention and marshalling** — `CallingConvention.Cdecl` assumed; string encoding
-   (ANSI vs UTF-8) and ownership of returned buffers recorded explicitly, since getting this wrong
-   corrupts memory silently.
+**Binding strategy — `bindgen` for truth, `libloading` for loading, no fake DLL:**
+
+* **`bindgen` (build-dependency, non-default `bindgen` feature).** On a machine that has the SDK
+  header, `build.rs` runs `bindgen` over `m300.h` and emits type and signature definitions into
+  `OUT_DIR`. Its output is **committed as a reviewed snapshot** in `src/ffi_generated.rs` so the
+  normal build needs neither `libclang` nor the vendor header, and a CI-able check
+  (`cargo build --features bindgen` on the bench) diffs regenerated output against the snapshot to
+  catch SDK drift. Committing generated *Rust declarations* is not committing a fake DLL — no binary
+  and no stub implementation enters the repo (D21).
+* **`libloading` (runtime).** The DLL is opened with `Library::new` and each entry point is fetched
+  with `get::<unsafe extern "C" fn(...)>`. This is the direct replacement for
+  `NativeLibrary.SetDllImportResolver`: nothing is resolved at process start, so a missing SDK
+  produces `-241,"Hardware missing"` and an actionable log line instead of a process that refuses to
+  launch. It also means the shipped exe has **no import-library link dependency** on the SDK, so the
+  same binary runs on a bench without it (in mock mode).
+
+Outline of the document:
+
+1. **Deployment** — where `M300Sdk.dll` (name to confirm) must live: next to `quickvib.exe`, a
+   directory given by `device.sdkPath` / `QUICKVIB_M300_SDK`, or the default DLL search path.
+   Probe order is documented and logged at `debug`.
+2. **Calling convention and marshalling** — `extern "C"` (cdecl) assumed for x64, where it is the
+   only convention; if a 32-bit SDK forces `i686`, `extern "stdcall"` becomes possible and must be
+   confirmed (Q14). String encoding (ANSI vs UTF-8 vs UTF-16), null-termination, and **ownership of
+   returned buffers** recorded explicitly, since getting this wrong corrupts memory silently — in
+   Rust it is undefined behavior with no exception to catch it (§20).
 3. **Entry-point table** — for each function used: exact name, signature, return/error semantics,
    thread affinity, and whether it blocks. The set QuickVib expects to need is small: initialize
    library, open/attach device, query identity and capabilities, start/stop streaming, shut down.
@@ -662,28 +889,40 @@ written in Phase 6 against the real SDK v1.2.0 header, but its outline is fixed 
 4. **Error mapping table** — native error code → SCPI error code from §9.
 5. **Socket ownership** — whether the SDK opens its own transport or QuickVib's `:9123` listener
    supplies the data. The plan assumes **QuickVib listens and the SDK is used for control/identity
-   only**; if the SDK owns the socket instead, `M300DeviceBackend` changes but `IDeviceBackend`,
-   `Core`, and every test stay untouched. This isolation is the main reason for the abstraction.
-6. **Threading rules** — which entry points may be called from a pool thread, and which require the
-   same thread for open/close pairs.
-7. **Manual Windows smoke checklist** — the only verification CI cannot do: device dials in,
+   only**; if the SDK owns the socket instead, `quickvib-m300` changes but `DeviceBackend`, every
+   platform-neutral crate, and every test stay untouched. This isolation is the main reason for the
+   abstraction.
+6. **Threading rules** — which entry points may be called from any thread, and which require the
+   same thread for open/close pairs. Rust makes this explicit: if the SDK is not thread-safe, the
+   `M300Backend` is `!Sync` and all calls are funnelled onto the reader thread.
+7. **Callback ABI, if any** — if the SDK delivers samples via a C callback, the Rust side must use an
+   `extern "C"` shim that immediately `catch_unwind`s (unwinding across an FFI boundary is UB) and
+   forwards through a `*mut c_void` user-data pointer.
+8. **Manual Windows smoke checklist** — the only verification CI cannot do: device dials in,
    `SYST:DEV:CONN?` returns `1`, capabilities read back and match the project, a 5 s capture yields
    `duration × rate` samples, measurements are plausible, exported CSV opens in Excel, link-drop
-   mid-capture produces `-240` and `ABORTED`.
+   mid-capture produces `-240` and `ABORTED`, and a run with the DLL deliberately absent produces
+   `-241` and a clean log line rather than a crash.
 
 ---
 
 ## 12. JSON project file schema
 
 Version 1. Unknown properties are ignored on read (forward compatibility); a *major* `schemaVersion`
-mismatch is rejected with `-224`. Property names are camelCase and matched case-insensitively.
+mismatch is rejected with `-224`. Property names are camelCase, mapped with
+`#[serde(rename_all = "camelCase")]`.
+
+> **One field changed with the language decision:** `measurement.responseFormat` was a .NET numeric
+> format string (`"F4"`). Rust has no equivalent, so it becomes
+> `measurement.responseDecimals` (integer, default `4`), used as the precision in `{:.*}`. This is
+> the only schema difference from the previous revision.
 
 | Path | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
 | `schemaVersion` | int | yes | — | `1` |
 | `name` | string | yes | — | Human-readable project name |
 | `description` | string | no | `""` | Free text |
-| `device.backend` | string | no | `"mock"` | `"mock"` \| `"m300"` |
+| `device.backend` | string | no | `"mock"` | `"mock"` \| `"m300"` — deserialized into an enum |
 | `device.port` | int | no | `9123` | Inbound port the M300 dials; `--device-port` overrides |
 | `device.sampleRateHz` | number | yes | — | e.g. `100000` |
 | `device.unit` | string | yes | — | `"velocity_um_s"` \| `"displacement_um"` \| `"acceleration_m_s2"` |
@@ -694,21 +933,22 @@ mismatch is rejected with `-224`. Property names are camelCase and matched case-
 | `recording.timeoutMultiplier` | number | no | `2.0` | Watchdog = duration × this + 1 s |
 | `recording.maxCaptureBytes` | int | no | `536870912` | Guard from §7.9 |
 | `measurement.removeDc` | bool | no | `false` | Subtract mean before peak/RMS |
-| `measurement.responseFormat` | string | no | `"F4"` | .NET numeric format for `CALC:*` |
+| `measurement.responseDecimals` | int | no | `4` | Decimal places for `CALC:*` responses (`0..=9`) |
 | `export.format` | string | no | `"CSV"` | `"CSV"` \| `"TXT"` |
 | `export.directory` | string | no | `"."` | Base for relative export paths |
 | `export.includeHeader` | bool | no | `true` | CSV metadata preamble + header row |
 | `identity.manufacturer` | string | no | `"QuickVib"` | `*IDN?` field 1 |
 | `identity.model` | string | no | `"M300-SCPI"` | `*IDN?` field 2 |
 | `identity.serialNumber` | string | no | device serial or `"0"` | `*IDN?` field 3 |
-| `identity.firmwareVersion` | string | no | app version | `*IDN?` field 4 |
+| `identity.firmwareVersion` | string | no | `CARGO_PKG_VERSION` | `*IDN?` field 4 |
+| `server.maxSessions` | int | no | `8` | *(proposed)* Concurrent SCPI session cap (§5.4) |
 | `mock.signal.components[]` | object[] | no | one 100 Hz component | `{ frequencyHz, amplitude, phaseDeg }` |
 | `mock.signal.noiseStdDev` | number | no | `0` | Gaussian noise σ |
-| `mock.signal.seed` | int | no | `12345` | Determinism for tests |
+| `mock.signal.seed` | int | no | `12345` | Determinism for tests (vendored PRNG, §7.4) |
 
 Validation rules enforced on load: `sampleRateHz > 0`; `durationSeconds ∈ (0, 3600]`;
-`timeoutMultiplier ≥ 1.0`; `unit`, `backend`, and `format` from their enumerations;
-`ceil(duration × rate) × 4 ≤ maxCaptureBytes`.
+`timeoutMultiplier ≥ 1.0`; `responseDecimals ∈ [0, 9]`; `unit`, `backend`, and `format` from their
+enumerations; `ceil(duration × rate) × 4 ≤ maxCaptureBytes`, computed with `checked_mul`.
 
 ---
 
@@ -720,18 +960,19 @@ Validation rules enforced on load: `sampleRateHz > 0`; `durationSeconds ∈ (0, 
 | `--scpi-port <n>` | 1–65535 | `5025` | Port the SCPI server listens on for the UTS. |
 | `--device-port <n>` | 1–65535 | `9123` | Port the device server listens on for the M300's inbound connection. Overrides `device.port`. |
 | `--headless` | flag | off | No interactive console UI; structured log lines only (§16). Intended for UTS-launched runs. |
-| `--backend <mock\|m300>` | enum | *(project, else `mock`)* | *(proposed)* Override the project's backend selection. `m300` on a non-Windows host is a startup error (exit `2`). |
+| `--backend <mock\|m300>` | enum | *(project, else `mock`)* | *(proposed)* Override the project's backend selection. `m300` on a non-Windows host, or in a build without the `m300` feature, is a startup error (exit `2`). |
 | `--no-auto-load` | flag | off | *(proposed)* Suppress auto-load-last, for a clean UTS run. |
 | `--log-level <level>` | enum | `info` | *(proposed)* `trace\|debug\|info\|warn\|error`. |
-| `--version` | flag | — | Print version and exit `0`. |
+| `--version` | flag | — | Print `quickvib <CARGO_PKG_VERSION>` and exit `0`. |
 | `--help` | flag | — | Print usage and exit `0`. |
 
-Unknown flags, missing values, and out-of-range ports exit `2` with usage on stderr.
+Unknown flags, missing values, and out-of-range ports exit `2` with usage on stderr. `--flag=value`
+and `--flag value` are both accepted; `--` terminates flag parsing.
 
 Example UTS invocation:
 
 ```
-QuickVib.exe --project C:\Tests\Test.proj --scpi-port 5025 --device-port 9123 --headless
+quickvib.exe --project C:\Tests\Test.proj --scpi-port 5025 --device-port 9123 --headless
 ```
 
 ---
@@ -759,7 +1000,7 @@ QuickVib.exe --project C:\Tests\Test.proj --scpi-port 5025 --device-port 9123 --
   },
   "measurement": {
     "removeDc": false,
-    "responseFormat": "F4"
+    "responseDecimals": 4
   },
   "export": {
     "format": "CSV",
@@ -787,35 +1028,39 @@ QuickVib.exe --project C:\Tests\Test.proj --scpi-port 5025 --device-port 9123 --
 
 ---
 
-## 15. Mock vs M300 backend strategy (P/Invoke without a fake DLL)
+## 15. Mock vs M300 backend strategy (FFI without a fake DLL)
 
 The constraint is: **no fake/stub native DLL in the repo**, yet everything must build and test on
-Linux. The approach:
+Linux. The Rust approach:
 
-1. **Isolate the native surface.** Every `[DllImport]` lives in exactly one file, `M300Interop.cs`,
-   inside `QuickVib.Device.M300`, which targets `net8.0-windows`. Nothing in `Core`, the test
-   projects, or `App` (beyond one conditional construction) references the native names.
-2. **Never load it by accident.** .NET resolves `DllImport` lazily, at first call — referencing the
-   assembly does not probe for the DLL. `BackendFactory` constructs `M300DeviceBackend` only when the
-   backend is explicitly `m300` **and** `OperatingSystem.IsWindows()`; otherwise it constructs the
-   mock. A Linux `dotnet test` therefore never reaches a P/Invoke.
-3. **Solution-level guard.** The Linux CI job builds and tests through `QuickVib.Linux.slnf`, which
-   excludes the Windows-only project, so an accidental cross-reference fails CI immediately rather
-   than at runtime on the bench.
+1. **Isolate the native surface.** Every `unsafe extern "C"` declaration lives in exactly one crate,
+   `quickvib-m300`, in one file (`ffi.rs`, backed by the reviewed `bindgen` snapshot). Every other
+   crate is `#![forbid(unsafe_code)]` (D22), which is a *compiler-enforced* guarantee that FFI cannot
+   leak outward — strictly stronger than the .NET convention it replaces.
+2. **Never build it by accident.** `quickvib-m300` is omitted from the workspace's
+   `default-members`, and its dependency in the bin crate is
+   `[target.'cfg(windows)'.dependencies]` **and** behind the non-default `m300` feature. On Linux,
+   `cargo build`/`cargo test`/`cargo clippy` at the workspace root never compile it; an accidental
+   cross-dependency from a platform-neutral crate fails CI immediately rather than at runtime on the
+   bench.
+3. **Never load it by accident.** `libloading` resolves the DLL lazily, on first use.
+   `backend_factory.rs` constructs `M300Backend` only when the backend is explicitly `m300`, the
+   `m300` feature is on, **and** `cfg!(windows)`; otherwise it constructs the mock. A Linux run
+   therefore never reaches a native call, and a Windows run without the SDK gets `-241`, not a crash.
 4. **Test the risky logic without the DLL.** The bug-prone parts of the M300 path are *framing*
-   (arbitrary chunk boundaries → `float32` samples) and *inbound accept/disconnect handling*. Both are
-   pure BCL, so `Float32StreamFramer` (takes a `Stream`) and `DeviceTcpListener` (loopback) live in
-   `Core` and are exhaustively unit-tested on Linux, including 1-byte-at-a-time delivery.
-   `QuickVib.Device.M300` is left holding only interop declarations and thin glue.
+   (arbitrary chunk boundaries → `f32` samples) and *inbound accept/disconnect handling*. Both are
+   pure `std`, so `framer.rs` (takes `impl Read`) and `listener.rs` (loopback) live in
+   `quickvib-device` and are exhaustively unit-tested on Linux, including 1-byte-at-a-time delivery.
+   `quickvib-m300` is left holding only FFI declarations and thin glue — a few hundred lines.
 5. **Document, don't fake, the ABI.** `docs/M300-NATIVE.md` (§11) records entry points, calling
-   convention, marshalling, error semantics, and threading rules.
-6. **Resolver for a clean failure.** `NativeLibrary.SetDllImportResolver` finds the SDK next to the
-   exe or in a configured directory, and turns a missing SDK into `-241,"Hardware missing"` with an
-   actionable log line.
-7. **One manual Windows smoke checklist** covers what CI cannot (§11.7).
+   convention, marshalling, ownership, error semantics, and threading rules. The `bindgen` snapshot
+   is the machine-checkable half of that document.
+6. **Clean failure, not a crash.** Missing DLL → `Library::new` error → `-241,"Hardware missing"` +
+   an actionable log line naming every path probed. Missing symbol → the same, naming the symbol.
+7. **One manual Windows smoke checklist** covers what CI cannot (§11.8).
 
-Net effect: mock is the default, and everything except a thin interop layer is exercised on Linux
-in CI.
+Net effect: mock is the default, and everything except a thin, `unsafe`-confined interop crate is
+exercised on Linux in CI.
 
 ---
 
@@ -833,37 +1078,46 @@ stdout (stderr for `warn`/`error`), safe for a UTS to capture and grep:
 2026-01-01T12:00:07.530Z WARN  rec     rateDrift expected=100000 actual=99762
 ```
 
-Fields are `timestamp level component message key=value…`, invariant culture, UTC. Every SCPI error
-pushed to the queue is also logged at `warn` with the offending command text, so a UTS failure can be
-diagnosed from the console capture alone without re-running with `SYST:ERR?` polling.
+Fields are `timestamp level component message key=value…`, UTC. Implementation is ~80 lines behind a
+`Logger` trait (so tests capture lines into a `Vec<String>` instead of stdout): a `Mutex<Box<dyn
+Write + Send>>` for atomic whole-line writes across threads, plus the hand-rolled
+`SystemTime` → civil-date conversion described in §6.3. Every SCPI error pushed to the queue is also
+logged at `warn` with the offending command text, so a UTS failure can be diagnosed from the console
+capture alone without re-running with `SYST:ERR?` polling.
 
 ---
 
 ## 17. Test strategy
 
-All tests target `net8.0`, use **xUnit**, and run with `dotnet test` on Linux. No test requires
-Windows, hardware, or the SDK. Determinism comes from the seeded mock signal and the injected
-`TimeProvider` (D19) — no test sleeps in real time, and there are no wall-clock-dependent assertions.
+All tests run with `cargo test --workspace --locked` on **Linux**, using the built-in test harness —
+`#[test]`, `assert!`/`assert_eq!`, `#[should_panic]` where a panic is the contract, and a local
+`assert_close(a, b, tol)` for floats. No test requires Windows, hardware, or the SDK; the FFI crate
+is outside `default-members` so it is not even compiled. Determinism comes from the seeded, vendored
+mock signal generator and the injected `Clock` (D20) — no test sleeps in real time, and there are no
+wall-clock-dependent assertions. Doc-tests on the public API of each library crate run as part of
+`cargo test` and serve as the usage examples.
 
-### 17.1 Unit tests (`QuickVib.Core.Tests`)
+### 17.1 Unit tests (in-crate `#[cfg(test)] mod tests`)
 
-| Area | Representative cases |
+| Crate / area | Representative cases |
 | --- | --- |
-| SCPI lexer/parser | Short vs long form (`CONF:REC:DUR` == `CONFigure:RECord:DURation`); case insensitivity; `?` detection; quoted string arguments with embedded spaces and escaped quotes; semicolon-chained messages; leading-colon path reset; over-long line and malformed input → `-100`. |
-| Command dispatch | Every command in §8 dispatches to the right handler with the right parsed arguments; unknown header → `-113`. |
-| Error queue | FIFO ordering; `0,"No error"` when empty; `*CLS` clears; 32-deep overflow → `-350`. |
-| State machine | Legal transitions; `INIT` while recording → `-221`; `ABOR` from `Idle` is a no-op; `*RST` from every state lands in `Idle`; a new `INIT` clears the previous capture. |
-| Measurements | Analytic oracle: pure sine amplitude `A` ⇒ peak `A`, RMS `A/√2`, p-p `2A` within tolerance; DC offset with and without `removeDc`; constant signal ⇒ RMS = value, p-p = 0; single-sample buffer; `double` accumulation on a long buffer; `NaN`/`Inf` propagation. |
-| Project store | Round-trip load→save→load equality; each missing required field → `-224`; each validation rule (rate, duration, unit, format, capture cap); unknown extra property ignored; missing file → `-256`; auto-load record write/read; stale recorded path skipped. |
-| Stream framing | LE `float32` decode; split across chunk boundaries at every offset 1–3; 1-byte-at-a-time delivery; trailing partial sample retained across reads; known byte pattern → known float values; large-buffer throughput sanity. |
-| Exporters | CSV preamble + header + row count; invariant culture with `de-DE` forced as the ambient culture (catches comma-decimal bugs); `G9` round-trip fidelity; TXT one value per line; `includeHeader=false`; directory auto-creation; overwrite; atomic temp-then-move leaves no partial file on failure. |
-| Mock backend | Determinism for a fixed seed; sample count == `ceil(duration × rate)`; cancellation stops promptly; multi-component superposition matches the analytic sum; fault-injection modes behave. |
-| CLI parsing | Defaults; each flag; invalid port → exit `2`; unknown flag → exit `2`; `--help`/`--version`; `--backend m300` on Linux → exit `2`. |
+| `quickvib-scpi` lexer/parser | Short vs long form (`CONF:REC:DUR` == `CONFigure:RECord:DURation`); ASCII case insensitivity; `?` detection; quoted string arguments with embedded spaces and escaped quotes; semicolon-chained messages; leading-colon path reset; over-long line, non-UTF-8 bytes, and malformed input → `-100`. |
+| `quickvib-scpi` dispatch | Every command in §8 parses to the right `Command` variant with the right arguments; unknown header → `-113`. A match over the `Command` enum in the engine means adding a variant without a handler is a compile error, not a runtime gap. |
+| `quickvib-engine` error queue | FIFO ordering; `0,"No error"` when empty; `*CLS` clears; 32-deep overflow → `-350`. |
+| `quickvib-engine` state machine | Legal transitions; `INIT` while recording → `-221`; `ABOR` from `Idle` is a no-op; `*RST` from every state lands in `Idle`; a new `INIT` clears the previous capture; an exhaustive `(state, event)` table test over both enums. |
+| `quickvib-measure` stats | Analytic oracle: pure sine amplitude `A` ⇒ peak `A`, RMS `A/√2`, p-p `2A` within tolerance; DC offset with and without `removeDc`; constant signal ⇒ RMS = value, p-p = 0; single-sample buffer; `f64` accumulation on a long buffer (assert against a Kahan-summed reference); `NaN`/`Inf` propagation. |
+| `quickvib-project` store | Round-trip load→save→load equality; each missing required field → `-224`; each validation rule (rate, duration, unit, decimals, format, capture cap); unknown extra property ignored; missing file → `-256`; auto-load record write/read; stale recorded path skipped; `checked_mul` overflow on an absurd rate × duration → `-222` not a panic. |
+| `quickvib-device` framing | LE `f32` decode; split across chunk boundaries at every offset 1–3 (table-driven over all offsets); a `Read` impl that yields exactly one byte per call; trailing partial sample retained across reads; known byte pattern → known float values; `Ok(0)` mid-sample handled as link loss; large-buffer throughput sanity. |
+| `quickvib-measure` exporters | CSV preamble + header + row count; round-trip fidelity (write → parse → compare bit-exact, since Rust's `{}` is shortest-round-trip); TXT one value per line; `includeHeader=false`; directory auto-creation; overwrite; temp-then-rename leaves no partial file when the writer fails midway (injected failing `Write`). |
+| `quickvib-device` mock | Determinism for a fixed seed, asserted against a **checked-in golden vector** so a refactor of the PRNG is caught; sample count == `ceil(duration × rate)`; cancellation stops promptly; multi-component superposition matches the analytic sum; fault-injection modes behave. |
+| `quickvib` CLI | Defaults; each flag; `--flag=value` and `--flag value`; invalid port → exit `2`; unknown flag → exit `2`; `--help`/`--version`; `--backend m300` on Linux → exit `2`. Parser is a pure `fn parse(args: &[OsString]) -> Result<Options, CliError>`, so no process spawning is needed. |
+| `quickvib` logger | Timestamp formatting against known epoch values, including a leap day and a year boundary; level routing to stdout vs stderr; concurrent writers never interleave within a line. |
 
-### 17.2 Integration tests (`QuickVib.Integration.Tests`)
+### 17.2 Integration tests (`crates/quickvib/tests/`)
 
-Spin up the real `ScpiTcpServer` on an ephemeral port (bind port `0`, read back the assigned port)
-with the mock backend and a fake clock, driven by a small `ScpiClient` helper from `QuickVib.TestKit`:
+Spin up the real SCPI server on an ephemeral port (bind `127.0.0.1:0`, read back the assigned port
+via `TcpListener::local_addr`) with the mock backend and a fake clock, driven by a small `ScpiClient`
+helper from `quickvib-testkit`:
 
 * **Full happy path:** `*IDN?` → `MMEM:LOAD:STAT` → `CONF:REC:DUR 0.1` → `SYST:DEV:CONN?` → `INIT` →
   `REC:WAIT?` → `CALC:MEAS:ALL?` → `MMEM:STOR:TRAC` → assert the file exists with the right row count.
@@ -873,64 +1127,151 @@ with the mock backend and a fake clock, driven by a small `ScpiClient` helper fr
 * **Watchdog timeout** with a stalling mock → `-365` and `ABORTED`.
 * **Two concurrent sessions** share instrument state; each resolves its own `*OPC?`; a notification
   never interleaves inside another session's response line.
+* **Session cap** — the ninth concurrent connection is refused and logged, and the existing eight are
+  unaffected.
 * **Error paths:** `INIT` with no project → `-221`; `FETC?` with no data → `-230`;
   `MMEM:LOAD:STAT "nope.proj"` → `-256`; `FORM XML` → `-224`; `CONF:REC:DUR 0` → `-222`.
-* **Device link:** a fake "M300" client connects to a `DeviceTcpListener` on loopback and pushes LE
-  `float32` bytes; `SYST:DEV:CONN?` flips `0`→`1`→`0` across connect/disconnect; disconnect
-  mid-capture → `-240`; a second inbound connection is refused while one is live.
+* **Device link:** a fake "M300" client connects to the device listener on loopback and pushes LE
+  `f32` bytes; `SYST:DEV:CONN?` flips `0`→`1`→`0` across connect/disconnect; disconnect mid-capture
+  → `-240`; a second inbound connection is refused while one is live.
 * **Protocol robustness:** `\n` and `\r\n` both accepted; compound `*CLS;*IDN?`; a client that
-  disconnects mid-query does not disturb the engine or other sessions.
+  disconnects mid-query does not disturb the engine or other sessions; a session thread that is made
+  to panic (test-only fault-injection command) closes that session and leaves the process healthy
+  (D27).
 * **`FETC?` at scale:** a capture of ≥ 100 000 samples transfers completely and parses back to the
   same values.
 
+Every test binds `127.0.0.1:0` and uses `tempfile::TempDir` for filesystem work, so the suite is
+parallel-safe under `cargo test`'s default thread-per-test model — no serialization attribute and no
+fixed ports anywhere.
+
 ### 17.3 Not covered by automated tests
 
-Real SDK P/Invoke marshalling and real hardware timing. Covered instead by the manual Windows smoke
-checklist in `docs/M300-NATIVE.md` (§11.7).
+Real SDK FFI marshalling and real hardware timing. Covered instead by the manual Windows smoke
+checklist in `docs/M300-NATIVE.md` (§11.8), plus a Windows CI job that *compiles* the FFI crate
+(§18.1) so signature and type errors are caught even though they cannot be executed.
 
 ---
 
-## 18. CI
+## 18. CI and producing the Windows executable
 
-A GitHub Actions workflow on `ubuntu-latest`: `dotnet restore` → `dotnet build -c Release
-QuickVib.Linux.slnf` → `dotnet test -c Release` with coverage collection. Warnings are errors (D21),
-so the build gate is meaningful.
+### 18.1 CI matrix (GitHub Actions)
 
-Optionally a `windows-latest` job that builds the full solution — compile-only for the M300 project,
-with no device tests. If no Windows runner is available, that project's compilation is verified
-locally and the gap is documented (see §20).
+| Job | Runner | Steps | Gate |
+| --- | --- | --- | --- |
+| `lint` | `ubuntu-latest` | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings` | Required |
+| `test` | `ubuntu-latest` | `cargo test --workspace --all-targets --locked` (default-members, so no FFI crate) + `cargo test --doc` | Required |
+| `deps` | `ubuntu-latest` | Assert the direct-dependency list matches §6.3; optional `cargo deny check` from Phase 7 | Required |
+| `cross-win-gnu` | `ubuntu-latest` | `apt install gcc-mingw-w64-x86-64`; `rustup target add x86_64-pc-windows-gnu`; `cargo build --release --target x86_64-pc-windows-gnu --locked` | Required — proves the exe still links from Linux |
+| `win-msvc` | `windows-latest` | `cargo build --release --target x86_64-pc-windows-msvc --locked --features m300`; `cargo clippy -p quickvib-m300 --features m300 -- -D warnings`; upload `quickvib.exe` as an artifact | Required once a Windows runner exists; **compile-only for the FFI crate — no device tests** |
+
+If no Windows runner is available, `win-msvc` is verified locally before each release and the gap is
+documented (see §20). `cross-win-gnu` keeps most of that value in Linux-only CI, because a
+Rust-only dependency graph (§6.3) means nearly every compile error is target-independent.
+
+### 18.2 How the Windows `.exe` is produced (R22)
+
+Rust produces a **single statically linked executable** by default — there is no runtime to install,
+no `publish` profile, no `--self-contained`, and no framework-dependent/self-contained distinction to
+reason about. Two supported routes:
+
+**A. Native Windows build (the shipped artifact, D25).**
+
+```
+rustup target add x86_64-pc-windows-msvc
+set RUSTFLAGS=-C target-feature=+crt-static
+cargo build --release --target x86_64-pc-windows-msvc --locked --features m300
+:: -> target\x86_64-pc-windows-msvc\release\quickvib.exe
+```
+
+`+crt-static` links the MSVC C runtime statically, so the UTS host needs **no Visual C++
+redistributable** — a real deployment concern on locked-down test-cell machines. The MSVC target is
+the one shipped because it is the ABI the SDK vendor almost certainly built against, and because it
+is what a Windows-side debugger and crash dump tooling expect.
+
+**B. Cross-compile from Linux with mingw-w64 (developer loop and Linux CI).**
+
+```
+sudo apt-get install -y gcc-mingw-w64-x86-64
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu --locked
+# -> target/x86_64-pc-windows-gnu/release/quickvib.exe
+```
+
+with `.cargo/config.toml`:
+
+```toml
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+```
+
+This works precisely because the dependency graph is pure Rust (§6.3) — nothing has a C build script.
+The resulting exe is testable under Wine for the mock path.
+
+**Why cross-compiling is still viable for the M300 build:** because the SDK is loaded at runtime with
+`libloading` (§11), there is **no import library and no link-time dependency** on the vendor DLL, so
+the GNU-target build has nothing to link against and nothing to miss. At the C ABI level, a
+GNU-built exe can call an MSVC-built DLL for plain `extern "C"` functions over POD types — the
+caveats are C++ name mangling, exceptions across the boundary, and passing CRT-owned handles
+(`FILE*`, `malloc`'d pointers freed by the other side), all of which §11.2 requires the ABI document
+to rule in or out. Until that is confirmed, MSVC remains the shipped target (D25) and GNU is a
+convenience.
+
+**C. `cargo-xwin`** (cross-compile to `*-pc-windows-msvc` from Linux using the Microsoft CRT headers
+it downloads) is noted as a fallback if no Windows runner materializes but the MSVC target is
+required. It is not the default because it adds a licensing/EULA acceptance step to CI.
+
+Version stamping is `env!("CARGO_PKG_VERSION")` plus a build-time git SHA read from the
+`GITHUB_SHA`/`git rev-parse` environment in `build.rs` for the bin crate only — no dependency, and
+it feeds `*IDN?` field 4 and `--version`.
 
 ---
 
 ## 19. Implementation milestones
 
-Ordered; each phase is independently reviewable and ends with a green `dotnet test` on Linux.
+Ordered; each phase is independently reviewable and ends with a green `cargo test --workspace` on
+Linux plus a green `cargo clippy -- -D warnings`. **None of this starts until the plan is approved.**
 
-1. **Phase 0 — Scaffolding.** `.gitignore`, `.editorconfig`, `Directory.Build.props` (net8.0,
-   nullable enable, `TreatWarningsAsErrors`), solution plus the six projects, `QuickVib.Linux.slnf`,
-   CI workflow. Deliverable: an empty-but-building solution with CI green.
-2. **Phase 1 — Domain core.** Project model, `ProjectStore` with validation, `LastProjectTracker`,
-   `MeasurementCalculator`, CSV/TXT exporters, `samples/Test.proj`. All unit-tested; no networking.
-   Highest test-value-per-line phase — almost entirely pure functions.
-3. **Phase 2 — Backends and streaming.** `IDeviceBackend`, `MockDeviceBackend` with the seeded signal
-   generator and fault injection, `Float32StreamFramer` with exhaustive chunk-boundary tests,
-   `DeviceTcpListener` over loopback, injected `TimeProvider`.
-4. **Phase 3 — Instrument engine.** State machine, error queue, OPC bookkeeping, recording pipeline
-   with watchdog and capture-size guard, `REC:WAIT?` waiter primitives, `#REC:DONE` fan-out.
-5. **Phase 4 — SCPI layer.** Lexer, command tree, every command in §8, response formatting, session
-   handling, compound-message support.
-6. **Phase 5 — App, CLI, TCP.** Argument parsing, `ScpiTcpServer`, `BackendFactory`, auto-load-last,
-   `--headless` structured logging, exit codes. Integration tests over loopback (§17.2). **At the end
-   of this phase the product is fully usable against the mock backend** — a UTS can be pointed at it.
-7. **Phase 6 — M300 backend.** `M300Interop.cs`, `M300NativeResolver`, `M300DeviceBackend` wiring to
-   the framer and listener, `docs/M300-NATIVE.md`, manual Windows smoke run. Windows-only; not
-   exercised in Linux CI. **Gated on the SDK questions in §21.**
+1. **Phase 0 — Cargo workspace scaffolding.** Create the root `Cargo.toml` with `[workspace]`,
+   `members`, `default-members` (everything except `quickvib-m300`), `[workspace.package]`
+   (edition 2021, `rust-version`, license, repository) and `[workspace.dependencies]` pinning `serde`,
+   `serde_json`, `libloading`, `tempfile` in one place. Add `rust-toolchain.toml` (stable + rustfmt +
+   clippy), `rustfmt.toml`, `clippy.toml` (the `disallowed-methods` entries for D20), `.gitignore`,
+   `.cargo/config.toml` (mingw linker), and the eight crate skeletons — each with a `lib.rs`/`main.rs`
+   carrying its lint header (`#![forbid(unsafe_code)]`, `#![deny(missing_docs)]`) and one placeholder
+   item so the workspace compiles. Commit `Cargo.lock` (D26). Add the CI workflow from §18.1
+   including the mingw cross-build job. **Deliverable: an empty-but-building workspace, `cargo test`
+   green with zero tests, `cargo build --target x86_64-pc-windows-gnu` producing a `quickvib.exe`
+   that prints its version.** That last item front-loads the whole Windows-artifact question into
+   Phase 0 instead of discovering it in Phase 7.
+2. **Phase 1 — Domain core.** `quickvib-core` (units, `ScpiError` catalogue, `Clock`, `CancelToken`),
+   `quickvib-project` (serde schema, store, validation, last-project tracker), `quickvib-measure`
+   (stats + CSV/TXT exporters), `samples/Test.proj`. All unit-tested; no networking. Highest
+   test-value-per-line phase — almost entirely pure functions.
+3. **Phase 2 — Backends and streaming.** `quickvib-device`: the `DeviceBackend` trait, `MockBackend`
+   with the vendored seeded PRNG and fault injection, `framer.rs` with exhaustive chunk-boundary
+   tests, `listener.rs` over loopback, `Clock` injection throughout.
+4. **Phase 3 — Instrument engine.** `quickvib-engine`: state machine, error queue, OPC bookkeeping,
+   recording pipeline with `Condvar` watchdog and capture-size guard, `REC:WAIT?` waiter primitives,
+   `#REC:DONE` fan-out, panic containment (D27).
+5. **Phase 4 — SCPI layer.** `quickvib-scpi`: lexer, command tree, the `Command` enum covering every
+   command in §8, response formatting, session state, compound-message support; engine dispatch as an
+   exhaustive `match`.
+6. **Phase 5 — App, CLI, TCP.** `quickvib` bin: argument parsing, SCPI TCP server with the session
+   cap, device server wiring, `backend_factory`, auto-load-last, `--headless` structured logging,
+   exit codes. Integration tests over loopback (§17.2). **At the end of this phase the product is
+   fully usable against the mock backend** — a UTS can be pointed at it, on Windows or Linux.
+7. **Phase 6 — M300 backend.** `quickvib-m300`: `build.rs` + `bindgen` snapshot, `libloading`
+   resolver, `M300Backend` wiring to the framer and listener, `docs/M300-NATIVE.md`, manual Windows
+   smoke run. Windows-only; compile-checked in the `win-msvc` CI job, not executed in CI.
+   **Gated on the SDK questions in §21.1.**
 8. **Phase 7 — Docs and polish.** Bilingual README (§23), `docs/SCPI.md`, a copy-pasteable UTS
-   example transcript, version stamping, single-file publish profile for `QuickVib.exe`.
+   example transcript, release profile tuning (`lto = "thin"`, `codegen-units = 1`, `strip = true`,
+   `panic = "unwind"` kept per D27), `cargo deny` gate, tagged release producing the MSVC exe.
 
-A reasonable first PR is Phases 0–2: self-contained, and it gives reviewers the data model and the
-math before any protocol code lands. Phases 3–5 are the natural second PR, at which point the mock
-path is end-to-end complete.
+A reasonable first PR is Phases 0–2: self-contained, and it gives reviewers the crate boundaries, the
+data model, and the math before any protocol code lands. Phases 3–5 are the natural second PR, at
+which point the mock path is end-to-end complete.
 
 ---
 
@@ -938,13 +1279,21 @@ path is end-to-end complete.
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| M300 SDK v1.2.0 ABI details (entry points, calling convention, marshalling, and especially whether the SDK owns the socket or QuickVib listens) are not in hand. | Phase 6 could need rework. | Keep the native surface behind `IDeviceBackend`; move framing and listening into `Core` so they survive either answer; confirm before starting Phase 6. |
-| `FETC?` on a 5 s × 100 kS/s capture is a ~6 MB single ASCII line; some SCPI clients cap read buffers. | UTS read failures or timeouts. | Offer `TRAC:POIN?` first; stream the response rather than buffering it; keep an IEEE 488.2 definite-length block (`#<n><len><bytes>`) as an additive option (Q3). |
-| Unsolicited `#REC:DONE` interleaving with a query response could confuse a strict client. | Parsing errors on the UTS side. | Distinct `#` prefix; per-session write serialization so it can never split a response; make notifications opt-out. |
+| M300 SDK v1.2.0 ABI details (entry points, calling convention, string ownership, and especially whether the SDK owns the socket or QuickVib listens) are not in hand. | Phase 6 could need rework. | Keep the native surface behind `DeviceBackend`; keep framing and listening in `quickvib-device` so they survive either answer; confirm before starting Phase 6. |
+| **Rust FFI has no marshalling safety net.** A wrong signature or ownership assumption is undefined behavior — memory corruption or a silent wrong answer — where .NET would have thrown. | Corrupted measurements or a hard crash on the bench, potentially intermittent. | `#![forbid(unsafe_code)]` everywhere but `quickvib-m300` (D22); `bindgen`-generated declarations from the real header rather than hand-transcription (§11); a `SAFETY:` comment per block; the crate kept to a few hundred lines; the §11.8 smoke checklist run against real hardware before sign-off. |
+| **Toolchain/ABI mismatch:** a GNU-target exe loading an MSVC-built vendor DLL, or a static-CRT exe exchanging CRT-owned resources with the DLL. | Crashes that only reproduce on the bench. | Ship the MSVC target (D25); require §11.2 to state whether any CRT-owned resource crosses the boundary; if one does, drop `+crt-static` and document the redistributable requirement. |
+| **The SDK may be 32-bit only.** | The whole build must move to `i686-pc-windows-msvc`, and `stdcall` becomes possible. | Q-C asks this before Phase 6. The change is a target triple plus a calling-convention token in `ffi.rs`; nothing else in the workspace is bitness-sensitive — but discovering it late wastes a Phase 6. |
+| `bindgen` needs `libclang` and the vendor header, so it cannot run in CI. | Generated bindings could drift from the SDK unnoticed. | Commit the generated snapshot as reviewed source; the bench-side `--features bindgen` build regenerates and diffs; the SDK version is asserted at runtime where the ABI exposes it. |
+| Unwinding across the FFI boundary (if the SDK uses callbacks) is UB. | Crash on any panic inside a callback. | Every `extern "C"` shim wraps its body in `catch_unwind` and converts a panic to an error code (§11.7). |
+| `FETC?` on a 5 s × 100 kS/s capture is a ~6 MB single ASCII line; some SCPI clients cap read buffers. | UTS read failures or timeouts. | Offer `TRAC:POIN?` first; stream the response through a `BufWriter` rather than buffering it; keep an IEEE 488.2 definite-length block (`#<n><len><bytes>`) as an additive option (Q3). |
+| Unsolicited `#REC:DONE` interleaving with a query response could confuse a strict client. | Parsing errors on the UTS side. | Distinct `#` prefix; per-session write mutex so it can never split a response; make notifications opt-out. |
 | Real device timing jitter — samples arriving slower than nominal. | Captures ending short, or watchdog false positives. | Duration enforced by sample count with a generous watchdog multiplier; actual vs expected rate logged as a `rateDrift` warning. |
-| Long captures at high sample rates could exhaust memory. | Process crash mid-test. | Explicit capture-size cap rejected at `INIT` with `-222` (§7.9). |
-| Windows-only build steps break Linux CI. | Red CI unrelated to the change. | `QuickVib.Linux.slnf` from Phase 0; a cross-reference fails CI immediately. |
-| No Windows CI runner may be available. | The M300 project compiles only locally. | Documented gap; that project is kept small and mechanical so local verification is credible. |
+| Long captures at high sample rates could exhaust memory; Rust aborts on allocation failure rather than throwing. | Process death mid-test, no error code returned to the UTS. | Explicit capture-size cap rejected at `INIT` with `-222` (§7.9), computed with `checked_mul` so the guard itself cannot overflow. |
+| Blocking thread-per-session model: a client that opens sessions and blocks each in `REC:WAIT?` consumes threads. | Thread exhaustion / refused connections. | `max_sessions` cap (default 8) with a logged refusal; §6.4 records the async escape hatch and bounds its cost to one file. |
+| `Mutex` poisoning after a contained panic could wedge the engine. | Instrument stops responding after one bad command. | Panic containment per D27 plus `unwrap_or_else(into_inner)` at every lock site, with the invariant argument recorded in §7.10. |
+| Hand-rolled UTC date formatting (to avoid a `chrono` dependency) is classic leap-year/epoch-bug territory. | Wrong timestamps in UTS log captures and CSV preambles. | ~30 lines of the standard civil-from-days algorithm, unit-tested against known epochs including a leap day and a year boundary (§17.1); if it ever misbehaves, adding `time` is a one-line reversal. |
+| Windows-only code breaks Linux CI. | Red CI unrelated to the change. | `default-members` excludes `quickvib-m300` from Phase 0; a cross-dependency fails CI immediately. |
+| No Windows CI runner may be available. | The FFI crate compiles only locally. | The mingw cross-build job keeps most of the coverage in Linux CI; the FFI crate is kept small and mechanical so local verification is credible; documented gap. |
 | Divergence between this plan and the UTS's actual expectations (`*IDN?` text, command spellings). | Late rework at integration. | Every identity field is configurable; `INIT`/`REC:STAR` aliasing already hedges vocabulary; resolve Q1 before Phase 7 sign-off. |
 
 ---
@@ -954,16 +1303,20 @@ path is end-to-end complete.
 ### 21.1 Blocking
 
 Nothing blocks starting Phases 0–5: every unresolved item has a recorded default in §4, and each is
-cheap to change because it sits behind an interface or a config field. Two items block **Phase 6**
+cheap to change because it sits behind a trait or a config field. Three items block **Phase 6**
 specifically:
 
 * **Q-A. M300 SDK v1.2.0 ABI.** The real header (or its documentation) is required: exact exported
-  function names, signatures, calling convention, string marshalling, error-code semantics, and
-  threading rules. Without it, `M300Interop.cs` cannot be written — and per D20 it will not be faked.
+  function names, signatures, calling convention, string encoding and buffer ownership, error-code
+  semantics, and threading rules. Without it, `ffi.rs` cannot be written — and per D21 it will not be
+  faked.
 * **Q-B. Who owns the device socket.** Does the SDK open the transport itself, or does QuickVib's
   `:9123` listener supply the byte stream and the SDK handle only control/identity? The plan assumes
   the latter (matching the brief's "M300 connects inbound"), but the answer determines
-  `M300DeviceBackend`'s shape. It does not affect `Core` or any test.
+  `M300Backend`'s shape. It does not affect any platform-neutral crate or any test.
+* **Q-C. SDK bitness and build toolchain.** Is the SDK DLL x64 or x86-only, and was it built with
+  MSVC or MinGW? This decides the shipped target triple, the calling convention on 32-bit, and
+  whether `+crt-static` is safe (§18.2, D25). Cheap to answer now, expensive to discover in Phase 6.
 
 ### 21.2 Non-blocking (defaults recorded; confirm before v1 sign-off)
 
@@ -979,15 +1332,31 @@ specifically:
 6. **Auto-load-last storage location.** Is `%LOCALAPPDATA%\QuickVib\` acceptable, or does the UTS
    environment need a fixed path next to the exe (locked-down or roaming profiles)?
 7. **Concurrency policy.** Reject a second SCPI client (as many instruments do), or share state?
-   Default: share (D8).
+   Default: share, capped at 8 (D8, §5.4).
 8. **Proposed commands and flags.** Are `MMEM:LOAD:AUTO?`, `TRAC:POIN?`, `SYST:VERS?`, `#REC:ABORT`,
    `--backend`, `--no-auto-load`, and `--log-level` wanted, or should the surface stay exactly as
    specified in the brief? All are additive and individually removable.
 9. **Sample-rate authority.** Project-declared or device-reported? Default: project declares, device
    disagreement is logged (D13).
-10. **Dependencies.** Is a zero third-party-runtime-dependency stance required, or are
-    `System.CommandLine` / `FluentAssertions` acceptable? Default: zero at runtime, xUnit only for
-    tests (D18).
+10. **Dependency stance.** Is `serde` + `serde_json` acceptable, or is a literally zero-dependency
+    build required? Default: the two crates, justified in §6.3 (D18). A zero-dependency variant costs
+    roughly a 600-line hand-written JSON parser and its test suite.
+11. **Edition and MSRV.** Edition 2021 with a conservative pinned MSRV is the default (D1). Is edition
+    2024 (Rust 1.85+) wanted instead? Nothing in the design needs it; the cost of switching later is
+    one `cargo fix --edition` pass. Also: is there a fixed toolchain version on the build machine we
+    must not exceed?
+12. **Shipped target triple.** `x86_64-pc-windows-msvc` with `+crt-static` (D25), or is the mingw
+    (`-gnu`) artifact acceptable for deployment? Related: does the UTS host already have the VC++
+    redistributable?
+13. **Error/assert ergonomics.** Hand-written error enums and the built-in test harness (D24), or are
+    `thiserror` (build-time only) and `pretty_assertions` (dev-only) acceptable? Neither reaches the
+    shipped binary's runtime dependency set.
+14. **Async posture.** Confirm that a blocking thread-per-session server is acceptable (D19,
+    §6.4), i.e. that the UTS will not open more than a handful of concurrent SCPI sessions.
+15. **Graceful Ctrl-C.** A clean drain-and-exit on Ctrl-C needs either a small `unsafe`
+    `SetConsoleCtrlHandler` shim or a signal crate (`ctrlc`), both of which the current stance avoids
+    (§7.1). Is abrupt termination on Ctrl-C acceptable for a UTS-launched process, given that
+    `ABOR` + socket close is the normal shutdown path?
 
 ---
 
@@ -996,17 +1365,19 @@ specifically:
 Explicitly **not** built, by requirement:
 
 * **Pass/fail evaluation.** No limits, no verdicts, no tolerance bands. QuickVib returns numbers; the
-  UTS judges them.
+  UTS judges them. **This has not changed with the language decision** — it remains the UTS's job.
 * **DUT vibration control.** No shaker/exciter drive, no stimulus generation on real hardware. The
-  mock's synthesized signal is a *test fixture*, not DUT excitation.
+  mock's synthesized signal is a *test fixture*, not DUT excitation. Also the UTS's job.
 * **Retry logic.** A failed or aborted capture is reported; re-running is the UTS's decision.
-* **A fake/stub native DLL.** No `M300Sdk.dll` shim and no binary artifacts committed. Linux
-  testability comes from the mock backend and from keeping the native surface tiny, not from faking
-  the library.
+* **A fake/stub native DLL.** No `M300Sdk.dll` shim, no stub `.lib`, and no binary artifacts
+  committed. Linux testability comes from the mock backend and from keeping the native surface tiny,
+  not from faking the library. (Committing `bindgen`-generated *declarations* is not a fake DLL:
+  it is reviewed source describing an interface, with no implementation behind it.)
 
 Also out of scope for v1: GUI, real-time plotting, FFT/spectral analysis, multi-channel capture,
-VISA/HiSLIP/VXI-11 transports (raw socket only), USBTMC, triggering beyond immediate `INIT`, and any
-data persistence beyond the explicit CSV/TXT export.
+VISA/HiSLIP/VXI-11 transports (raw socket only), USBTMC, triggering beyond immediate `INIT`, any
+data persistence beyond the explicit CSV/TXT export, `no_std` support, WASM targets, and publishing
+any of these crates to crates.io.
 
 ---
 
@@ -1019,54 +1390,82 @@ Chinese section covering the same ground — not an abridged translation.
 
 1. **QuickVib** — one-paragraph description: SCPI-over-TCP wrapper around the M300 laser Doppler
    vibrometer for UTS integration.
-2. **Requirements** — .NET 8 runtime; Windows for real hardware; M300 SDK v1.2.0 installed
-   (not bundled); any OS for mock mode.
-3. **Quick start** — build, then `QuickVib.exe --project samples\Test.proj --headless`; connect with
-   telnet/PuTTY to `5025` and send `*IDN?`.
+2. **Requirements** — a Rust stable toolchain (MSRV stated) to build; nothing to install to run, as
+   the exe is statically linked; Windows plus M300 SDK v1.2.0 installed (not bundled) for real
+   hardware; any OS for mock mode.
+3. **Quick start** — `cargo build --release`, then
+   `quickvib.exe --project samples\Test.proj --headless`; connect with telnet/PuTTY to `5025` and
+   send `*IDN?`.
 4. **Command-line reference** — table from §13.
 5. **How it works** — the two TCP roles (UTS connects in on `5025`; M300 connects in on `9123`), the
-   LE `float32` stream, the record→measure→export flow, with the architecture diagram.
+   LE `f32` stream, the record→measure→export flow, with the architecture diagram.
 6. **SCPI command reference** — tables from §8, or a summary linking to `docs/SCPI.md`.
 7. **Example UTS session** — an annotated transcript from `*IDN?` through `MMEM:STOR:TRAC`.
 8. **Project file format** — schema table (§12) plus the `Test.proj` example.
-9. **Mock vs real device** — mock is the default; how to switch to the M300; where the SDK must be.
+9. **Mock vs real device** — mock is the default; how to switch to the M300 (`--features m300`,
+   `--backend m300`); where the SDK DLL must be.
 10. **Export formats** — CSV and TXT layout with a short sample of each.
 11. **Measurements** — peak/RMS/p-p definitions, units, DC-removal option.
-12. **Building and testing** — `dotnet build`, `dotnet test` (runs fully on Linux), CI notes.
-13. **Troubleshooting** — port already in use; device never dials in; `SYST:ERR?` code table; SDK not
-    found.
+12. **Building and testing** — `cargo build`, `cargo test` (runs fully on Linux), `cargo clippy`,
+    the workspace crate map, and **both** Windows build routes from §18.2 (native MSVC and mingw
+    cross-compile).
+13. **Troubleshooting** — port already in use; device never dials in; `SYST:ERR?` code table; SDK DLL
+    not found (`-241`) and the paths probed.
 14. **Scope** — what QuickVib does not do (pass/fail, DUT vibration, retries), and why.
-15. **License / contributing.**
+15. **License / contributing** — including the `unsafe` policy (D22) as a contribution rule.
 
 ### 中文部分 (Chinese section)
 
 1. **QuickVib 简介** — 通过 SCPI over TCP 将 M300 激光多普勒测振仪封装为类 Keysight 仪器，供 UTS 调用。
-2. **运行环境** — .NET 8；真实硬件需 Windows 与 M300 SDK v1.2.0（不随仓库分发）；模拟模式支持任意平台。
-3. **快速开始** — 编译后运行 `QuickVib.exe --project samples\Test.proj --headless`，用 telnet 连接
-   `5025` 端口并发送 `*IDN?`。
+2. **运行环境** — 使用 Rust stable 工具链编译（注明最低支持版本）；生成的是静态链接的单文件可执行程序，
+   运行时无需安装任何运行库；真实硬件需 Windows 与 M300 SDK v1.2.0（不随仓库分发）；模拟模式支持任意平台。
+3. **快速开始** — `cargo build --release` 后运行 `quickvib.exe --project samples\Test.proj --headless`，
+   用 telnet 连接 `5025` 端口并发送 `*IDN?`。
 4. **命令行参数说明** — 参数表（对应 §13）。
 5. **工作原理** — 两个 TCP 角色：UTS 主动连接 `5025`；M300 主动连入 `9123`。小端 float32 数据流；
    录制→测量→导出流程；附架构图。
 6. **SCPI 命令参考** — 命令表（对应 §8）。
 7. **UTS 会话示例** — 从 `*IDN?` 到 `MMEM:STOR:TRAC` 的完整交互示例及注释。
 8. **工程文件格式** — JSON 字段说明与 `Test.proj` 示例。
-9. **模拟后端与真实设备** — 默认使用模拟后端；如何切换到 M300；SDK 放置位置。
+9. **模拟后端与真实设备** — 默认使用模拟后端；如何切换到 M300（`--features m300`、`--backend m300`）；
+   SDK 动态库放置位置。
 10. **导出格式** — CSV 与 TXT 的字段与样例。
 11. **测量定义** — 峰值 / 有效值(RMS) / 峰峰值的计算方式、单位与去直流选项。
-12. **编译与测试** — `dotnet build`、`dotnet test`（可在 Linux 上完整运行）。
-13. **常见问题排查** — 端口被占用、设备未连入、`SYST:ERR?` 错误码对照、SDK 未找到。
+12. **编译与测试** — `cargo build`、`cargo test`（可在 Linux 上完整运行）、`cargo clippy`；
+    workspace 各 crate 职责说明；两种生成 Windows 可执行文件的方式（Windows 原生 MSVC 构建，
+    或在 Linux 上用 mingw-w64 交叉编译，见 §18.2）。
+13. **常见问题排查** — 端口被占用、设备未连入、`SYST:ERR?` 错误码对照、找不到 SDK 动态库（`-241`）
+    及其查找路径。
 14. **功能边界** — 不做判定（pass/fail）、不驱动 DUT 振动、不做重试逻辑，这些由 UTS 负责。
-15. **许可证与贡献指南。**
+15. **许可证与贡献指南** — 包含 `unsafe` 代码策略（D22）。
 
 ---
 
 ## 24. Definition of done (v1)
 
-* `dotnet build` and `dotnet test` pass on Linux with zero warnings.
+* `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo test --workspace --locked` all pass on Linux with zero warnings.
+* `cargo build --release --target x86_64-pc-windows-gnu` succeeds from Linux CI, and a
+  `x86_64-pc-windows-msvc` release build produces `quickvib.exe` that runs on a clean Windows host
+  with no runtime installed.
 * Every command in §8 is implemented and covered by at least one integration test against the mock.
-* `QuickVib.exe --project samples\Test.proj --headless` starts, answers `*IDN?`, and completes a full
+* `quickvib.exe --project samples\Test.proj --headless` starts, answers `*IDN?`, and completes a full
   record→measure→export cycle with the mock backend.
-* The manual Windows smoke checklist (§11.7) has been run once against real hardware.
+* The manual Windows smoke checklist (§11.8) has been run once against real hardware.
+* `unsafe` appears in exactly one crate, `quickvib-m300`, and every block carries a `SAFETY:` comment.
 * `docs/SCPI.md`, `docs/M300-NATIVE.md`, and the bilingual `README.md` are complete.
-* No native binaries and no fake DLL in the repo.
+* No native binaries and no fake DLL in the repo; `cargo tree --edges normal` matches §6.3.
 * Every open question in §21 is resolved or explicitly deferred with the decision recorded in §4.
+
+---
+
+## 25. Status and next step
+
+**Nothing in this plan has been implemented, and implementation has not been authorized.** The
+repository still contains only `README.md` and this document. The language decision (Rust) is locked
+per the requester's instruction; the remaining decisions are recorded in §4 with their status, and
+the questions that would change them are in §21.
+
+The next step is a **review of this document**, followed by explicit approval to begin **Phase 0**
+(§19) — at which point the first files created are `Cargo.toml`, `rust-toolchain.toml`, and the crate
+skeletons, and not before.
