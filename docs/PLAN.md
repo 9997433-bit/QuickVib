@@ -151,7 +151,7 @@ undecided; the genuinely unanswerable items are isolated in §21.1 and only gate
 | D15 | Measurement accumulation in `f64` even though samples are `f32` | Decided | Avoids precision loss on multi-hundred-thousand-sample captures |
 | D16 | Numeric formatting/parsing uses Rust's `core::fmt` / `str::parse`, which are **locale-independent by definition**; no locale API is ever consulted | Decided | Rust has no ambient culture, so the comma-decimal class of bug is structurally absent — but the tests in §17.1 still assert the wire format explicitly |
 | D17 | `#`-prefixed lines are the out-of-band notification namespace (`#REC:DONE`) | Decided | From the brief; `#` cannot begin a normal response in this surface |
-| D18 | **Runtime dependencies: `serde` + `serde_json` only** (plus `libloading`, Windows-target-only, for the M300 crate). No async runtime, no CLI crate, no logging crate, no date crate, no error-derive crate. Dev-dependencies: `tempfile` only | Default | §6.3 justifies each inclusion and each exclusion. A UTS-launched exe benefits from a dependency graph a reviewer can read in full. See Q10 and Q13 |
+| D18 | **Runtime dependencies: `serde` + `serde_json` only** (plus `libloading`, Windows-target-only, for the M300 crate, and `eframe`, `quickvib-ui`-only behind the non-default `gui` feature). No async runtime, no CLI crate, no logging crate, no date crate, no error-derive crate. Dev-dependencies: `tempfile` only | Default | §6.3 justifies each inclusion and each exclusion. A UTS-launched exe benefits from a dependency graph a reviewer can read in full. See Q10 and Q13 |
 | D19 | **Blocking `std::net` + OS threads; no `tokio`, no `async`** | Decided | §6.4. The concurrency is ~6 long-lived threads, not 10 000 connections; blocking sockets with read timeouts express every requirement here, and cancellation is `AtomicBool` + `TcpStream::shutdown` rather than a runtime-specific cancellation model |
 | D20 | Time is injected through a `Clock` trait (Rust has no `TimeProvider`); `Instant::now`/`SystemTime::now` are banned outside `quickvib-core::clock`, enforced by `clippy.toml` `disallowed-methods` | Decided | A "5-second" capture must run in milliseconds under test; the lint makes the rule mechanical instead of cultural |
 | D21 | No fake `M300Sdk.dll`; the ABI is captured in `docs/M300-NATIVE.md`, declarations are cross-checked against `bindgen` output on a machine that has the SDK, and correctness is verified by a manual Windows smoke checklist | Decided | From the brief |
@@ -344,6 +344,12 @@ quickvib/
     │   └── src/{lib.rs, lexer.rs, tree.rs, command.rs, format.rs, session.rs}
     ├── quickvib-engine/              # state machine, error queue, OPC, recording pipeline, dispatch
     │   └── src/{lib.rs, state.rs, engine.rs, errors.rs, opc.rs, recording.rs, dispatch.rs}
+    ├── quickvib-ui/                  # desktop front end (§19, Phase 8); egui behind `gui`
+    │   └── src/
+    │       ├── form.rs               # ProjectForm: the window's fields as plain data
+    │       ├── controller.rs         # load/save/apply/record over the shared Arc<Engine>
+    │       ├── status.rs             # one poll of the instrument, taken between repaints
+    │       └── window.rs             # the egui view; feature-gated, holds no rules
     ├── quickvib-sim/                 # BINARY crate -> m300-sim; the inbound device stand-in (§15)
     │   └── src/{lib.rs, main.rs}
     └── quickvib-m300/                # WINDOWS-ONLY; the ONLY crate with `unsafe`
@@ -395,6 +401,7 @@ quickvib (bin)
 | --- | --- | --- | --- |
 | `serde` (derive) + `serde_json` | `quickvib-project` only | A hand-rolled JSON parser is ~600 lines of the exact category of code that produces silent data bugs (escapes, exponents, surrogate pairs, duplicate keys). `serde_json` is the de-facto standard, has no transitive deps beyond `itoa`/`ryu`/`memchr`/`serde`, and gives us forward-compatible "ignore unknown fields" for free via `#[serde(default)]` + `deny_unknown_fields` off | ~600 lines of parser + a lifetime of edge cases |
 | `libloading` | `quickvib-m300` only, `[target.'cfg(windows)'.dependencies]` | Runtime `LoadLibraryW` + `GetProcAddress` with lifetime-checked symbols, so a missing SDK becomes `-241,"Hardware missing"` instead of a process that will not start. Alternative is hand-written `windows-sys` FFI to the loader — more `unsafe`, not less | ~80 lines of `unsafe` loader code |
+| `eframe` (egui) | `quickvib-ui` only, `optional = true` behind the non-default `gui` feature (§19, Phase 8) | A desktop window is not something to hand-roll: it is a windowing system, an event loop, a GPU surface and text layout. egui is immediate-mode, pure Rust with no C build script, and runs the same code on Windows and Linux, so the window is developed and screenshotted on the CI box and shipped on the bench. Off by default, so the UTS product, `cargo test --workspace` and the Windows cross-build carry the unchanged two-crate graph | An OS-specific UI toolkit binding, or no GUI |
 
 **Build dependency:** `bindgen`, in `quickvib-m300` only, behind the non-default `bindgen` feature
 (§11). It needs `libclang` and the vendor header, so it never runs in CI; it is a verification tool
@@ -958,7 +965,7 @@ mismatch is rejected with `-224`. Property names are camelCase, mapped with
 | `identity.serialNumber` | string | no | device serial or `"0"` | `*IDN?` field 3 |
 | `identity.firmwareVersion` | string | no | `CARGO_PKG_VERSION` | `*IDN?` field 4 |
 | `server.maxSessions` | int | no | `8` | *(proposed)* Concurrent SCPI session cap (§5.4) |
-| `server.scpiPort` | int | no | `5025` | Port the SCPI server listens on. `--scpi-port` overrides it; the GUI edits it. *(Startup still reads the flag only — wiring the project value into `AppBuilder` is a Phase 8 item.)* |
+| `server.scpiPort` | int | no | `5025` | Port the SCPI server listens on. Resolved at startup by `app::resolve_scpi_port` the way `device.port` is: `--scpi-port` wins, then this field, then the default. The GUI edits it |
 | `mock.signal.components[]` | object[] | no | one 100 Hz component | `{ frequencyHz, amplitude, phaseDeg }` |
 | `mock.signal.noiseStdDev` | number | no | `0` | Gaussian noise σ |
 | `mock.signal.seed` | int | no | `12345` | Determinism for tests (vendored PRNG, §7.4) |
@@ -1313,6 +1320,17 @@ Linux plus a green `cargo clippy -- -D warnings`. **None of this starts until th
    schema side of this landed with the setup fields in §12. The window is skipped under
    `--headless`, so the UTS path is untouched. Validation stays in `quickvib-project` — the GUI
    surfaces `ProjectError`, it does not re-implement the rules.
+
+   **Landed** as `quickvib-ui`, in two halves. `form`/`controller`/`status` are the view model:
+   no windowing dependency, so what *Apply* does to a live engine, how a rejected field reports
+   itself and how the low-pass cutoff tracks Nyquist are all covered by the ordinary
+   `cargo test --workspace` run on a machine with no display. `window` is the egui view behind
+   the off-by-default `gui` feature. Both accept loops move to background threads and the
+   window takes the main thread; closing it cancels them. A host that cannot give us a window
+   is a warning and a fall back to the console, never a failed start. Still to come: the
+   advanced laser/TEC/PID/trigger tab, which waits on schema and backend support for those
+   controls, and re-opening the backend in place so a sample-rate change does not need a
+   restart.
 
 A reasonable first PR is Phases 0–2: self-contained, and it gives reviewers the crate boundaries, the
 data model, and the math before any protocol code lands. Phases 3–5 are the natural second PR, at

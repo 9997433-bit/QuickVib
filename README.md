@@ -3,11 +3,15 @@
 **English | [中文](#quickvib-中文)**
 
 QuickVib makes an **M300 laser Doppler vibrometer** look and behave like a **Keysight-style SCPI
-instrument** to an existing UTS (unit test system). It is a single self-contained Windows console
+instrument** to an existing UTS (unit test system). It is a single self-contained Windows
 executable: the UTS launches it from a command prompt, opens a TCP socket, and sends ordinary SCPI
 text commands (`*IDN?`, `INIT`, `FETC?`, …) exactly as it would to a bench instrument. QuickVib
 records a fixed-duration vibration capture, returns the samples and the derived scalars
 (peak, RMS, peak-to-peak), and exports CSV or TXT.
+
+The same executable also has a **desktop window** for setting a project up by hand — sample rate,
+filters, ranges, ports, export — with a Start/Stop button and live peak/RMS/p-p. `--headless` is
+the UTS mode and never opens one; see [§2.1](#21-desktop-window-vs---headless).
 
 Scope is deliberately narrow: QuickVib **records, measures, and exports**. It does not decide
 pass/fail, does not drive DUT vibration, and does not own retry policy — those stay in the UTS.
@@ -28,7 +32,7 @@ port, and the bundled **`m300-sim`** executable is a stand-in that dials in and 
 ## Table of contents
 
 1. [Requirements](#1-requirements)
-2. [Quick start](#2-quick-start)
+2. [Quick start](#2-quick-start) · [2.1 Desktop window vs `--headless`](#21-desktop-window-vs---headless)
 3. [How the UTS launches QuickVib](#3-how-the-uts-launches-quickvib)
 4. [Command-line reference](#4-command-line-reference)
 5. [How it works](#5-how-it-works)
@@ -51,12 +55,13 @@ port, and the bundled **`m300-sim`** executable is a stand-in that dials in and 
 | --- | --- |
 | Build | A stable Rust toolchain, edition 2021 (the pinned version is in `rust-toolchain.toml`) |
 | Run (mock backend) | Nothing. The executable is statically linked — no runtime, no redistributable. Any OS: Windows, Linux, macOS |
+| Run the desktop window | A build with `--features gui` and a desktop session. On Linux that means X11 or Wayland plus `libxkbcommon`, which every desktop install already has; the window is not needed for, and not built by, the UTS path |
 | Run (real M300) | Windows x64, an M300 vibrometer, and the M300 SDK v1.2.0 installed on the host. The SDK is **not** bundled with QuickVib |
 | Cross-compile a Windows `.exe` from Linux | `gcc-mingw-w64-x86-64` and the `x86_64-pc-windows-gnu` Rust target |
 
-Runtime dependencies are deliberately minimal: `serde` + `serde_json` for the project file, and
-`libloading` on Windows only for the M300 crate. No async runtime, no CLI framework, no logging
-crate.
+Runtime dependencies are deliberately minimal: `serde` + `serde_json` for the project file,
+`libloading` on Windows only for the M300 crate, and `eframe`/egui only in `quickvib-ui` behind the
+off-by-default `gui` feature. No async runtime, no CLI framework, no logging crate.
 
 ## 2. Quick start
 
@@ -86,6 +91,57 @@ printf '*IDN?\n' | nc 127.0.0.1 5025
 To rehearse the real device link instead of the mock, start QuickVib with `--backend tcp` and dial
 in with the bundled simulator — see [§9.1](#91-m300-sim--simulating-the-inbound-device-link).
 
+### 2.1 Desktop window vs `--headless`
+
+There is one executable and two ways to run it.
+
+| | Command | What happens |
+| --- | --- | --- |
+| **UTS / automation** | `quickvib --headless …` | No window, ever. Structured log lines on stdout, both TCP servers in the foreground. This is the mode §3 documents and the one CI tests |
+| **Operator** | `quickvib …` | The SCPI and device servers move to background threads and a window opens on the main thread. Closing it shuts both servers down |
+
+The window is a **build-time feature**, off by default, so the shipped UTS binary and every CI
+build carry no graphics dependency at all:
+
+```bash
+cargo build --release --features gui
+./target/release/quickvib --project samples/Test.proj
+```
+
+A binary built *without* `--features gui` has no window to open, so a run without `--headless`
+prints the banner and serves from the console exactly as it always has. A binary built *with* it
+on a machine that has no display says so and does the same, rather than refusing to start.
+
+The window edits the project — the same JSON `samples/Test.proj` uses, validated by the same rules
+`MMEM:LOAD:STAT` applies:
+
+| Panel | Fields |
+| --- | --- |
+| Project | Name, description |
+| Acquisition | Sample rate, data type (velocity / displacement / acceleration), record duration, backend (mock / tcp / m300) |
+| Filters | Low-pass cutoff and high-pass cutoff. Unpinned, the low-pass follows the Nyquist frequency as the sample rate changes; tick **pin** to hold a value of your own |
+| Measuring ranges | Velocity, displacement and acceleration ranges; the one matching the selected data type is shown in bold |
+| Ports | SCPI port and device port |
+| Export | CSV or TXT, directory, CSV preamble, DC removal |
+
+**Apply** is the button that matters. It parses and validates every field, and on success hands the
+edited project to the *running* engine — the very same `Arc<Engine>` the SCPI sessions dispatch
+onto, so a `CONF:REC:DUR?` arriving on port 5025 a moment later answers with the duration just
+typed. On failure nothing is pushed and each rejected field is listed with the reason. Five
+settings cannot be picked up by a process that has already bound its sockets and opened its
+backend — the two ports, the backend, the sample rate and the data type — so Apply saves them and
+says which need a restart.
+
+The rest of the buttons: **Revert** re-reads the engine's project, **Save** / **Save as…** write it
+to a `.proj` file (this also applies it first), **Open…** loads one, **Start record** / **Stop**
+are `INIT` and `ABOR`, and **Export capture** is `MMEM:STOR:TRAC` with the path resolved against
+the export directory. The right-hand panel is the instrument: state, device link, `*IDN?`, session
+count, and the peak, RMS and peak-to-peak of the last completed capture.
+
+The **Advanced** tab is a placeholder. Laser power, TEC set point, PID gains and external
+triggering are real device controls with no representation in the version-1 project schema, and
+QuickVib does not invent settings the instrument cannot honour.
+
 ## 3. How the UTS launches QuickVib
 
 This is the invocation the UTS uses. All four arguments are shown explicitly even though three of
@@ -98,7 +154,7 @@ quickvib.exe --headless --scpi-port 5025 --device-port 9123 --project samples\Te
 
 | Part | Meaning |
 | --- | --- |
-| `--headless` | No interactive console UI — structured single-line log records on stdout only. This is the mode for UTS-launched runs |
+| `--headless` | No window and no interactive console UI — structured single-line log records on stdout only. This is the mode for UTS-launched runs |
 | `--scpi-port 5025` | Port QuickVib **listens on for the UTS**. `5025` is the conventional SCPI raw-socket port |
 | `--device-port 9123` | Port QuickVib **listens on for the M300**. The vibrometer is the one that dials in |
 | `--project samples\Test.proj` | Project file loaded at startup: sample rate, unit, record duration, export format, `*IDN?` identity |
@@ -115,9 +171,9 @@ Exit codes: `0` clean shutdown, `2` bad arguments, `3` port bind failure, `4` pr
 | Argument | Value | Default | Behavior |
 | --- | --- | --- | --- |
 | `--project <path>` | file path | *(auto-load-last)* | Load this project at startup. Failure is fatal (exit `4`) |
-| `--scpi-port <n>` | 1–65535 | `5025` | SCPI server port (the UTS connects in) |
-| `--device-port <n>` | 1–65535 | `9123` | Device server port (the M300 connects in). Overrides `device.port` |
-| `--headless` | flag | off | Structured log lines only; no interactive console UI |
+| `--scpi-port <n>` | 1–65535 | *(project, else `5025`)* | SCPI server port (the UTS connects in). Overrides `server.scpiPort` |
+| `--device-port <n>` | 1–65535 | *(project, else `9123`)* | Device server port (the M300 connects in). Overrides `device.port` |
+| `--headless` | flag | off | No window and no interactive console UI; structured log lines only |
 | `--backend <mock\|tcp\|m300>` | enum | *(project, else `mock`)* | Override the project's backend. `mock` synthesizes samples in process; `tcp` records the little-endian `f32` stream arriving on `--device-port` (a real M300, or `m300-sim`); `m300` uses the native SDK and, on a non-Windows host or in a build without the `m300` feature, is a startup error — never a silent fallback |
 | `--no-auto-load` | flag | off | Suppress auto-load-last, for a clean UTS run |
 | `--log-level <level>` | enum | `info` | `trace\|debug\|info\|warn\|error` |
@@ -478,10 +534,18 @@ device is configured for and labels them accordingly.
 
 ```bash
 cargo build --release              # release binaries: quickvib and m300-sim
+cargo build --release --features gui   # the same, with the desktop window
 cargo test                         # full test suite; runs on Linux, no hardware needed
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
+
+The GUI is off by default, and the test suite does not need it on: the window's view model —
+form-to-project mapping, validation messages, what Apply does to a live engine — lives in
+`quickvib-ui` with no windowing dependency and is covered by the plain `cargo test` run above, on a
+machine with no display. A separate CI job compiles, lints and tests the window itself, which also
+needs no display, because winit loads X11, Wayland and xkbcommon at run time rather than link
+time.
 
 `cargo test` covers everything except the native M300 path: the Windows-only `quickvib-m300` crate is
 excluded from the workspace's `default-members`, so a plain build, test, or clippy run on Linux never
@@ -526,6 +590,7 @@ is what ships.
 | `quickvib-device` | `DeviceBackend` trait, mock and socket-fed backends, LE `f32` framer, inbound listener |
 | `quickvib-scpi` | Lexer, command tree, parsed commands, response formatting |
 | `quickvib-engine` | State machine, error queue, OPC, recording pipeline, dispatch |
+| `quickvib-ui` | Desktop front end: the display-free view model always, the egui window behind `--features gui` |
 | `quickvib-sim` | The `m300-sim` executable: an inbound M300 stand-in (§9.1) |
 | `quickvib-testkit` | Dev-only shared test fixtures; ships nothing |
 | `quickvib-m300` | **Windows-only**, out of `default-members`, the only crate containing `unsafe` |
@@ -535,6 +600,8 @@ is what ships.
 | Symptom | Cause and fix |
 | --- | --- |
 | Exit code `3` at startup | A port is already in use. Another QuickVib instance, or something else on `5025`/`9123`. Pick a free port with `--scpi-port` / `--device-port` |
+| No window appears | Either the binary was built without `--features gui`, or `--headless` was passed, or the host has no display — the last two print a line saying so and go on serving from the console. Both servers run either way |
+| A GUI edit did not reach the instrument | Only **Apply** pushes the form into the running engine. Ports, backend, sample rate and data type are saved but need a restart, which Apply says explicitly |
 | Exit code `2` | Bad arguments — unknown flag, missing value, or a port outside 1–65535. Usage is on stderr |
 | Exit code `4` | `--project` was given but the file is missing or fails schema validation. The log line carries the JSON line and column |
 | `SYST:DEV:CONN?` returns `0` | The M300 has not dialed in. Check that it is powered, on the same network, configured to connect to this host on `9123`, that no firewall blocks the inbound connection, and that `device.allowedPeers` (if set) includes its address. With `--backend mock` this is always `1`, because the mock needs no link |
@@ -561,7 +628,11 @@ until it returns `0,"No error"`.
 * **No fake native DLL.** Linux testability comes from the mock backend and from `m300-sim`, which
   is a plain socket client — not from faking the vendor library.
 
-Also out of scope for v1: GUI, real-time plotting, FFT/spectral analysis, multi-channel capture,
+The desktop window ([§2.1](#21-desktop-window-vs---headless)) is a front end over the same project
+schema and the same engine — it adds no behaviour the SCPI surface does not already have, and it is
+never opened under `--headless`.
+
+Also out of scope for v1: real-time plotting, FFT/spectral analysis, multi-channel capture,
 VISA/HiSLIP/VXI-11 transports (raw socket only), USBTMC, and triggering beyond immediate `INIT`.
 
 ## 15. Contributing and license
@@ -586,9 +657,13 @@ License: not yet finalized — see `docs/PLAN.md`.
 **[English](#quickvib) | 中文**
 
 QuickVib 通过 **SCPI over TCP** 把 **M300 激光多普勒测振仪**封装成一台**类 Keysight 仪器**，供既有的
-UTS（单元测试系统）调用。它是一个自包含的 Windows 控制台可执行程序：UTS 从命令行启动它，建立 TCP
+UTS（单元测试系统）调用。它是一个自包含的 Windows 可执行程序：UTS 从命令行启动它，建立 TCP
 连接，然后像对台式仪器那样发送标准 SCPI 文本命令（`*IDN?`、`INIT`、`FETC?` 等）。QuickVib 完成一次
 定长振动采集，返回采样数据与导出的标量结果（峰值、有效值 RMS、峰峰值），并可导出 CSV 或 TXT。
+
+同一个可执行文件还带有一个**桌面窗口**，用于手工配置工程——采样率、滤波器、量程、端口、导出——并提供
+开始/停止按钮以及实时的峰值 / RMS / 峰峰值。`--headless` 是 UTS 使用的模式，永远不会打开窗口，参见
+[§2.1](#21-桌面窗口与---headless)。
 
 功能边界是刻意收窄的：QuickVib 只负责**采集、测量、导出**。它不做合格判定，不驱动 DUT 振动，也不负责
 重试策略——这些仍由 UTS 负责。
@@ -605,7 +680,7 @@ UTS（单元测试系统）调用。它是一个自包含的 Windows 控制台�
 ## 目录
 
 1. [运行环境](#1-运行环境)
-2. [快速开始](#2-快速开始)
+2. [快速开始](#2-快速开始) · [2.1 桌面窗口与 `--headless`](#21-桌面窗口与---headless)
 3. [UTS 如何启动 QuickVib](#3-uts-如何启动-quickvib)
 4. [命令行参数](#4-命令行参数)
 5. [工作原理](#5-工作原理)
@@ -626,11 +701,13 @@ UTS（单元测试系统）调用。它是一个自包含的 Windows 控制台�
 | --- | --- |
 | 编译 | Rust stable 工具链，edition 2021（具体版本固定在 `rust-toolchain.toml`） |
 | 运行（模拟后端） | 无需任何依赖。可执行文件为静态链接，不需要运行库或分发包。任意操作系统均可 |
+| 运行桌面窗口 | 需要以 `--features gui` 编译，并有可用的桌面会话。在 Linux 上即 X11 或 Wayland 加 `libxkbcommon`，任何桌面发行版都自带；UTS 路径既不需要窗口，也不会编译它 |
 | 运行（真实 M300） | Windows x64、M300 测振仪，以及主机上已安装的 M300 SDK v1.2.0。SDK **不随本仓库分发** |
 | 在 Linux 上交叉编译 Windows `.exe` | `gcc-mingw-w64-x86-64` 与 `x86_64-pc-windows-gnu` 目标 |
 
 运行时依赖被刻意压到最少：工程文件解析使用 `serde` + `serde_json`；`libloading` 仅在 Windows 上供
-M300 crate 使用。没有异步运行时，没有命令行框架，也没有日志框架。
+M300 crate 使用；`eframe`/egui 仅存在于 `quickvib-ui` 中，且位于默认关闭的 `gui` feature 之后。没有异步
+运行时，没有命令行框架，也没有日志框架。
 
 ## 2. 快速开始
 
@@ -660,6 +737,52 @@ printf '*IDN?\n' | nc 127.0.0.1 5025
 若想演练真实的设备链路而不是模拟后端，用 `--backend tcp` 启动 QuickVib，再用随仓库提供的模拟器连
 入——参见 [§9.1](#91-m300-sim模拟设备入站链路)。
 
+### 2.1 桌面窗口与 `--headless`
+
+只有一个可执行文件，两种运行方式。
+
+| | 命令 | 行为 |
+| --- | --- | --- |
+| **UTS / 自动化** | `quickvib --headless …` | 永远不打开窗口。stdout 上是结构化日志，两个 TCP 服务在前台运行。这就是第 3 节所描述、也是 CI 所测试的模式 |
+| **操作员** | `quickvib …` | SCPI 与设备服务移到后台线程，窗口占用主线程。关闭窗口即关闭两个服务 |
+
+窗口是一个**编译期 feature**，默认关闭，因此交付给 UTS 的二进制文件与所有 CI 构建都不带任何图形依赖：
+
+```bash
+cargo build --release --features gui
+./target/release/quickvib --project samples/Test.proj
+```
+
+未启用 `--features gui` 编译出的程序没有窗口可开，因此不带 `--headless` 运行时只会打印 banner 并像以
+前一样在控制台提供服务。启用了该 feature、但运行在没有显示环境的机器上时，程序会说明情况并同样回退
+到控制台，而不是拒绝启动。
+
+窗口编辑的就是工程文件——与 `samples/Test.proj` 相同的 JSON，并使用与 `MMEM:LOAD:STAT` 完全相同的校验
+规则：
+
+| 面板 | 字段 |
+| --- | --- |
+| Project | 名称、描述 |
+| Acquisition | 采样率、数据类型（速度 / 位移 / 加速度）、录制时长、后端（mock / tcp / m300） |
+| Filters | 低通与高通截止频率。未固定时，低通随采样率跟随奈奎斯特频率；勾选 **pin** 可固定为自定义值 |
+| Measuring ranges | 速度、位移、加速度三个量程；与当前数据类型对应的那一项以粗体显示 |
+| Ports | SCPI 端口与设备端口 |
+| Export | CSV 或 TXT、目录、CSV 注释头、是否去直流 |
+
+真正关键的按钮是 **Apply**。它解析并校验每一个字段，成功后把编辑好的工程交给**正在运行**的引擎——也就
+是各个 SCPI 会话所共享的那一个 `Arc<Engine>`，因此紧接着从 5025 端口发来的 `CONF:REC:DUR?` 返回的就是
+刚刚输入的时长。校验失败则什么都不写入，并逐条列出被拒绝的字段与原因。有五项设置是已经绑定套接字、
+已经打开后端的进程无法重新读取的——两个端口、后端、采样率与数据类型——Apply 会把它们保存下来，并明确
+提示哪些需要重启才能生效。
+
+其余按钮：**Revert** 重新读取引擎中的工程，**Save** / **Save as…** 写入 `.proj` 文件（写入前会先执行
+Apply），**Open…** 加载工程，**Start record** / **Stop** 对应 `INIT` 与 `ABOR`，**Export capture** 对应
+`MMEM:STOR:TRAC`，路径同样基于导出目录解析。右侧面板显示仪器状态：状态机、设备链路、`*IDN?`、会话数，
+以及最近一次完成采集的峰值、RMS 与峰峰值。
+
+**Advanced** 标签页目前是占位。激光功率、TEC 设定点、PID 增益与外部触发都是真实的设备控制项，但在版本
+1 的工程 schema 中没有对应字段；QuickVib 不会凭空造出仪器无法执行的设置。
+
 ## 3. UTS 如何启动 QuickVib
 
 这就是 UTS 使用的启动命令。四个参数中有三个本来就是默认值，但仍全部显式写出——在测试工位上，一条明确
@@ -671,7 +794,7 @@ quickvib.exe --headless --scpi-port 5025 --device-port 9123 --project samples\Te
 
 | 参数 | 含义 |
 | --- | --- |
-| `--headless` | 无交互式控制台界面，仅在 stdout 输出单行结构化日志。UTS 启动时使用此模式 |
+| `--headless` | 不打开窗口、也无交互式控制台界面，仅在 stdout 输出单行结构化日志。UTS 启动时使用此模式 |
 | `--scpi-port 5025` | QuickVib **监听 UTS** 的端口。`5025` 是 SCPI 裸 socket 的惯用端口 |
 | `--device-port 9123` | QuickVib **监听 M300** 的端口。由测振仪主动连入 |
 | `--project samples\Test.proj` | 启动时加载的工程文件：采样率、单位、录制时长、导出格式、`*IDN?` 标识 |
@@ -687,9 +810,9 @@ QuickVib 在两条链路上**都是 TCP 服务端**，从不主动外连。进�
 | 参数 | 取值 | 默认值 | 行为 |
 | --- | --- | --- | --- |
 | `--project <path>` | 文件路径 | *(自动加载上次工程)* | 启动时加载该工程，失败即致命错误（退出码 `4`） |
-| `--scpi-port <n>` | 1–65535 | `5025` | SCPI 服务端口（UTS 连入） |
-| `--device-port <n>` | 1–65535 | `9123` | 设备服务端口（M300 连入），覆盖 `device.port` |
-| `--headless` | 开关 | 关 | 仅输出结构化日志，无交互界面 |
+| `--scpi-port <n>` | 1–65535 | *(工程配置，否则 `5025`)* | SCPI 服务端口（UTS 连入），覆盖 `server.scpiPort` |
+| `--device-port <n>` | 1–65535 | *(工程配置，否则 `9123`)* | 设备服务端口（M300 连入），覆盖 `device.port` |
+| `--headless` | 开关 | 关 | 不打开窗口，仅输出结构化日志 |
 | `--backend <mock\|tcp\|m300>` | 枚举 | *(工程配置，否则 `mock`)* | 覆盖工程中的后端选择。`mock` 在进程内合成信号；`tcp` 记录从 `--device-port` 连入的小端 `f32` 数据流（真实 M300，或 `m300-sim`）；`m300` 走原生 SDK，在非 Windows 主机、或未启用 `m300` feature 的构建上指定它会直接启动失败，绝不静默回退 |
 | `--no-auto-load` | 开关 | 关 | 禁用「自动加载上次工程」，保证运行环境干净 |
 | `--log-level <level>` | 枚举 | `info` | `trace\|debug\|info\|warn\|error` |
@@ -1028,10 +1151,16 @@ index,time_s,value
 
 ```bash
 cargo build --release              # 发布版可执行文件：quickvib 与 m300-sim
+cargo build --release --features gui   # 同上，并带桌面窗口
 cargo test                         # 完整测试套件；可在 Linux 上运行，无需硬件
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
+
+GUI 默认关闭，测试套件也不需要打开它：窗口的视图模型——表单与工程结构之间的映射、校验提示、Apply 对
+运行中引擎所做的事——都放在不依赖任何窗口库的 `quickvib-ui` 中，由上面这条普通的 `cargo test` 在没有显
+示器的机器上覆盖。窗口本身由一个独立的 CI job 编译、lint 并测试，同样不需要显示器，因为 winit 是在运
+行时而非链接时加载 X11、Wayland 与 xkbcommon 的。
 
 `cargo test` 覆盖除原生 M300 路径以外的全部代码：仅限 Windows 的 `quickvib-m300` crate 被排除在
 workspace 的 `default-members` 之外，因此在 Linux 上执行普通的 build / test / clippy 时根本不会编译它。
@@ -1073,6 +1202,7 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 | `quickvib-device` | `DeviceBackend` trait、模拟后端与套接字驱动后端、小端 `f32` framer、入站监听 |
 | `quickvib-scpi` | 词法分析、命令树、命令解析结果、响应格式化 |
 | `quickvib-engine` | 状态机、错误队列、OPC、录制流水线、命令分发 |
+| `quickvib-ui` | 桌面前端：不依赖窗口库的视图模型始终编译，egui 窗口位于 `--features gui` 之后 |
 | `quickvib-sim` | `m300-sim` 可执行程序：模拟 M300 主动连入的替身（§9.1） |
 | `quickvib-testkit` | 仅供测试使用的共享夹具，不参与发布 |
 | `quickvib-m300` | **仅 Windows**，不在 `default-members` 中，是唯一包含 `unsafe` 的 crate |
@@ -1082,6 +1212,8 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 | 现象 | 原因与处理 |
 | --- | --- |
 | 启动即退出码 `3` | 端口被占用：可能是另一个 QuickVib 实例，或其他程序占用了 `5025`/`9123`。用 `--scpi-port` / `--device-port` 换端口 |
+| 没有出现窗口 | 要么编译时没有加 `--features gui`，要么传了 `--headless`，要么主机没有显示环境——后两种情况都会打印一行说明并继续在控制台提供服务。无论哪种情况，两个服务都在运行 |
+| GUI 中的修改没有生效 | 只有 **Apply** 会把表单推入运行中的引擎。端口、后端、采样率与数据类型会被保存，但需要重启，Apply 会明确提示 |
 | 退出码 `2` | 参数错误——未知参数、缺少取值，或端口不在 1–65535。用法信息输出在 stderr |
 | 退出码 `4` | 指定了 `--project` 但文件不存在或 schema 校验失败。日志中包含出错的 JSON 行号与列号 |
 | `SYST:DEV:CONN?` 返回 `0` | M300 尚未连入。检查设备是否上电、是否与主机同网段、是否配置为连接本机 `9123`、防火墙是否拦截入站连接，以及 `device.allowedPeers`（若配置）是否包含其地址。`--backend mock` 下该查询恒为 `1`，因为模拟后端不需要链路 |
@@ -1106,8 +1238,11 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 * **不提供假的原生 DLL。** 在 Linux 上的可测试性来自模拟后端，以及只是一个普通 socket 客户端的
   `m300-sim`——而不是伪造厂商库。
 
-v1 同样不包含：图形界面、实时绘图、FFT / 频谱分析、多通道采集、VISA/HiSLIP/VXI-11 传输（仅支持裸
-socket）、USBTMC，以及除立即 `INIT` 之外的触发方式。
+桌面窗口（[§2.1](#21-桌面窗口与---headless)）只是同一套工程 schema 与同一个引擎之上的前端——它不提供
+SCPI 接口之外的任何行为，并且在 `--headless` 下永远不会打开。
+
+v1 同样不包含：实时绘图、FFT / 频谱分析、多通道采集、VISA/HiSLIP/VXI-11 传输（仅支持裸 socket）、
+USBTMC，以及除立即 `INIT` 之外的触发方式。
 
 ## 15. 贡献指南与许可证
 
