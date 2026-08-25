@@ -5,6 +5,8 @@
 - **审计性质**: 只读审计,未改动任何产品 crate
 - **基线验证**: `cargo test --workspace --locked` 全绿(495 项测试通过,0 失败);`cargo clippy --workspace --all-targets --locked` 本地复跑无警告
 
+> **并发提交说明**:本报告审计的是 commit `5895498`。在报告提交时,共享分支上已出现兄弟代理的并发提交:`064d172`(*fix: drop Complete after adopt_project invalidates capture* —— 正是本报告 §3 确认的缺陷 #1 的修复)与 `1a6db07`(*fix: reject duplicate ports and stop mock false-positive faults*)。§3 的缺陷分析描述的是修复前的基线状态,仍可作为该修复的评审依据;§5 的 P1 项据此可视为"已有候选修复待评审"而非"待实现"。
+
 ## 0. 结论速览(TL;DR)
 
 1. **PLAN.md §25 的自述与代码事实相符**:Phase 0–5 全部落地,mock 路径端到端可用;Phase 8(GUI)虽在 §25 中未提及,但已按 §19 的 "Landed" 描述实现并有充分测试。Phase 6(M300 原生后端)按 D21/§21.1 有意推迟,推迟方式干净(占位 crate、无假 DLL、`--backend m300` 显式报错)。Phase 7 是唯一 **PARTIAL** 的阶段:双语 README 和 release profile 已就绪,但 `docs/SCPI.md`、UTS 示例转录文档、`cargo deny` 门禁、tagged release 均缺。
