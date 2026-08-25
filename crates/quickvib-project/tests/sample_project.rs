@@ -25,6 +25,10 @@ fn sample_project_loads_and_validates() {
     assert_eq!(project.device.port, 9123);
     assert_eq!(project.device.sample_rate_hz, 100_000.0);
     assert_eq!(project.device.unit, SampleUnit::VelocityUmPerSec);
+    assert_eq!(project.device.effective_lpf_hz(), 50_000.0);
+    assert_eq!(project.device.high_pass_hz, 0.0);
+    assert_eq!(project.device.active_range(), 1000.0);
+    assert_eq!(project.server.scpi_port, 5025);
     assert_eq!(project.recording.duration_seconds, 5.0);
     assert_eq!(project.measurement.response_decimals, 4);
     assert_eq!(project.export.format, ExportFormat::Csv);

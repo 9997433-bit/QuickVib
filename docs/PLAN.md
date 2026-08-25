@@ -940,6 +940,11 @@ mismatch is rejected with `-224`. Property names are camelCase, mapped with
 | `device.allowedPeers` | string[] | no | `[]` | Empty = accept any inbound peer |
 | `device.connectTimeoutSeconds` | number | no | `30` | How long to wait for the M300 to dial in |
 | `device.sdkPath` | string | no | `null` | Directory to probe for the native SDK (M300 only) |
+| `device.lpfHz` | number \| null | no | `null` | Low-pass cutoff. `null` tracks Nyquist (`sampleRateHz / 2`); a number pins it. The GUI keeps it at Nyquist as the rate changes until the operator overrides it. Read via `Device::effective_lpf_hz()` |
+| `device.highPassHz` | number | no | `0` | High-pass cutoff; `0` disables. Must be below the effective low-pass cutoff |
+| `device.velocityRange` | number | no | `1000` | Velocity measuring range, µm/s |
+| `device.displacementRange` | number | no | `1000` | Displacement measuring range, µm |
+| `device.accelerationRange` | number | no | `100` | Acceleration measuring range, m/s². `Device::active_range()` picks the one matching `device.unit` |
 | `recording.durationSeconds` | number | yes | — | `(0, 3600]` |
 | `recording.timeoutMultiplier` | number | no | `2.0` | Watchdog = duration × this + 1 s |
 | `recording.maxCaptureBytes` | int | no | `536870912` | Guard from §7.9 |
@@ -953,13 +958,20 @@ mismatch is rejected with `-224`. Property names are camelCase, mapped with
 | `identity.serialNumber` | string | no | device serial or `"0"` | `*IDN?` field 3 |
 | `identity.firmwareVersion` | string | no | `CARGO_PKG_VERSION` | `*IDN?` field 4 |
 | `server.maxSessions` | int | no | `8` | *(proposed)* Concurrent SCPI session cap (§5.4) |
+| `server.scpiPort` | int | no | `5025` | Port the SCPI server listens on. `--scpi-port` overrides it; the GUI edits it. *(Startup still reads the flag only — wiring the project value into `AppBuilder` is a Phase 8 item.)* |
 | `mock.signal.components[]` | object[] | no | one 100 Hz component | `{ frequencyHz, amplitude, phaseDeg }` |
 | `mock.signal.noiseStdDev` | number | no | `0` | Gaussian noise σ |
 | `mock.signal.seed` | int | no | `12345` | Determinism for tests (vendored PRNG, §7.4) |
 
 Validation rules enforced on load: `sampleRateHz > 0`; `durationSeconds ∈ (0, 3600]`;
 `timeoutMultiplier ≥ 1.0`; `responseDecimals ∈ [0, 9]`; `unit`, `backend`, and `format` from their
-enumerations; `ceil(duration × rate) × 4 ≤ maxCaptureBytes`, computed with `checked_mul`.
+enumerations; `ceil(duration × rate) × 4 ≤ maxCaptureBytes`, computed with `checked_mul`;
+`lpfHz > 0` when present; `highPassHz ≥ 0` and, when non-zero, strictly below the effective
+low-pass cutoff; the three range fields finite and `> 0`; `scpiPort ≠ 0`.
+
+The `device.lpfHz`, `device.highPassHz`, and the three range fields are the **M300 setup block**:
+every one is optional with a default, so a file written before they existed still loads unchanged,
+and each one is directly editable in the GUI (§19, Phase 8).
 
 ---
 
@@ -1003,7 +1015,12 @@ quickvib.exe --project C:\Tests\Test.proj --scpi-port 5025 --device-port 9123 --
     "sampleRateHz": 100000,
     "unit": "velocity_um_s",
     "allowedPeers": [],
-    "connectTimeoutSeconds": 30
+    "connectTimeoutSeconds": 30,
+    "lpfHz": 50000,
+    "highPassHz": 0,
+    "velocityRange": 1000,
+    "displacementRange": 1000,
+    "accelerationRange": 100
   },
   "recording": {
     "durationSeconds": 5.0,
@@ -1023,6 +1040,10 @@ quickvib.exe --project C:\Tests\Test.proj --scpi-port 5025 --device-port 9123 --
     "model": "M300-SCPI",
     "serialNumber": "SN-0001",
     "firmwareVersion": "1.0.0"
+  },
+  "server": {
+    "maxSessions": 8,
+    "scpiPort": 5025
   },
   "mock": {
     "signal": {
@@ -1285,10 +1306,18 @@ Linux plus a green `cargo clippy -- -D warnings`. **None of this starts until th
 8. **Phase 7 — Docs and polish.** Bilingual README (§23), `docs/SCPI.md`, a copy-pasteable UTS
    example transcript, release profile tuning (`lto = "thin"`, `codegen-units = 1`, `strip = true`,
    `panic = "unwind"` kept per D27), `cargo deny` gate, tagged release producing the MSVC exe.
+9. **Phase 8 — GUI.** A desktop window over the existing crates: project load/save, edit of the
+   device setup block (rate, `lpfHz` — held at Nyquist as the rate changes until the operator pins
+   it — `highPassHz`, the three measuring ranges), recording/export/identity fields, and
+   `server.scpiPort`; a run button driving the same engine the SCPI layer drives; live status. The
+   schema side of this landed with the setup fields in §12. The window is skipped under
+   `--headless`, so the UTS path is untouched. Validation stays in `quickvib-project` — the GUI
+   surfaces `ProjectError`, it does not re-implement the rules.
 
 A reasonable first PR is Phases 0–2: self-contained, and it gives reviewers the crate boundaries, the
 data model, and the math before any protocol code lands. Phases 3–5 are the natural second PR, at
-which point the mock path is end-to-end complete.
+which point the mock path is end-to-end complete. Phase 8 is independent of Phase 6 and can land
+in either order.
 
 ---
 
@@ -1391,7 +1420,13 @@ Explicitly **not** built, by requirement:
   not from faking the library. (Committing `bindgen`-generated *declarations* is not a fake DLL:
   it is reviewed source describing an interface, with no implementation behind it.)
 
-Also out of scope for v1: GUI, real-time plotting, FFT/spectral analysis, multi-channel capture,
+**The GUI is now in scope** (§19, Phase 8): a desktop window for editing the project — device setup
+(sample rate, `lpfHz`, `highPassHz`, the three measuring ranges), recording, export, identity and
+`server.scpiPort` — plus load/save and a run button. It is a *front end over the same
+`quickvib-project` schema and the same engine*; it adds no behaviour the SCPI surface does not
+already have, and `--headless` remains the UTS path.
+
+Also out of scope for v1: real-time plotting, FFT/spectral analysis, multi-channel capture,
 VISA/HiSLIP/VXI-11 transports (raw socket only), USBTMC, triggering beyond immediate `INIT`, any
 data persistence beyond the explicit CSV/TXT export, `no_std` support, WASM targets, and publishing
 any of these crates to crates.io.

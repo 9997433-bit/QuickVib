@@ -8,7 +8,12 @@
     "sampleRateHz": 100000,
     "unit": "velocity_um_s",
     "allowedPeers": [],
-    "connectTimeoutSeconds": 30
+    "connectTimeoutSeconds": 30,
+    "lpfHz": 50000,
+    "highPassHz": 0,
+    "velocityRange": 1000,
+    "displacementRange": 1000,
+    "accelerationRange": 100
   },
   "recording": {
     "durationSeconds": 5.0,
@@ -28,6 +33,10 @@
     "model": "M300-SCPI",
     "serialNumber": "SN-0001",
     "firmwareVersion": "1.0.0"
+  },
+  "server": {
+    "maxSessions": 8,
+    "scpiPort": 5025
   },
   "mock": {
     "signal": {

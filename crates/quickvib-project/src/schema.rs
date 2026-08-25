@@ -21,6 +21,18 @@ pub const DEFAULT_DEVICE_PORT: u16 = 9123;
 /// Default guard on the capture buffer, in bytes (512 MiB).
 pub const DEFAULT_MAX_CAPTURE_BYTES: u64 = 536_870_912;
 
+/// Default port the SCPI server listens on: the conventional SCPI raw-socket port.
+pub const DEFAULT_SCPI_PORT: u16 = 5025;
+
+/// Default velocity measuring range, in micrometres per second.
+pub const DEFAULT_VELOCITY_RANGE: f64 = 1000.0;
+
+/// Default displacement measuring range, in micrometres.
+pub const DEFAULT_DISPLACEMENT_RANGE: f64 = 1000.0;
+
+/// Default acceleration measuring range, in metres per second squared.
+pub const DEFAULT_ACCELERATION_RANGE: f64 = 100.0;
+
 /// A loaded, validated QuickVib project.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,6 +93,47 @@ pub struct Device {
     /// Directory to probe for the native SDK (M300 backend only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sdk_path: Option<PathBuf>,
+    /// Low-pass filter cutoff in hertz. `null` (the default) tracks the Nyquist frequency,
+    /// `sampleRateHz / 2`; a number pins the cutoff regardless of the rate. Read through
+    /// [`Device::effective_lpf_hz`], never directly, so the tracking case is not forgotten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lpf_hz: Option<f64>,
+    /// High-pass filter cutoff in hertz. `0` disables the filter.
+    #[serde(default)]
+    pub high_pass_hz: f64,
+    /// Velocity measuring range, in micrometres per second.
+    #[serde(default = "default_velocity_range")]
+    pub velocity_range: f64,
+    /// Displacement measuring range, in micrometres.
+    #[serde(default = "default_displacement_range")]
+    pub displacement_range: f64,
+    /// Acceleration measuring range, in metres per second squared.
+    #[serde(default = "default_acceleration_range")]
+    pub acceleration_range: f64,
+}
+
+impl Device {
+    /// The low-pass cutoff actually in force: the explicit `lpfHz` when set, else Nyquist.
+    #[must_use]
+    pub fn effective_lpf_hz(&self) -> f64 {
+        self.lpf_hz.unwrap_or(self.sample_rate_hz / 2.0)
+    }
+
+    /// The measuring range that applies to `unit`, in that unit's own scale.
+    #[must_use]
+    pub fn range_for(&self, unit: SampleUnit) -> f64 {
+        match unit {
+            SampleUnit::VelocityUmPerSec => self.velocity_range,
+            SampleUnit::DisplacementUm => self.displacement_range,
+            SampleUnit::AccelerationMPerSec2 => self.acceleration_range,
+        }
+    }
+
+    /// The measuring range that applies to this device's configured [`Device::unit`].
+    #[must_use]
+    pub fn active_range(&self) -> f64 {
+        self.range_for(self.unit)
+    }
 }
 
 /// Recording settings.
@@ -149,6 +202,9 @@ pub struct Server {
     /// Concurrent SCPI session cap.
     #[serde(default = "default_max_sessions")]
     pub max_sessions: usize,
+    /// Port the SCPI server listens on for the UTS. `--scpi-port` overrides it.
+    #[serde(default = "default_scpi_port")]
+    pub scpi_port: u16,
 }
 
 /// Mock backend configuration.
@@ -194,6 +250,15 @@ fn default_device_port() -> u16 {
 fn default_connect_timeout() -> f64 {
     30.0
 }
+fn default_velocity_range() -> f64 {
+    DEFAULT_VELOCITY_RANGE
+}
+fn default_displacement_range() -> f64 {
+    DEFAULT_DISPLACEMENT_RANGE
+}
+fn default_acceleration_range() -> f64 {
+    DEFAULT_ACCELERATION_RANGE
+}
 fn default_timeout_multiplier() -> f64 {
     2.0
 }
@@ -223,6 +288,9 @@ fn default_firmware() -> String {
 }
 fn default_max_sessions() -> usize {
     8
+}
+fn default_scpi_port() -> u16 {
+    DEFAULT_SCPI_PORT
 }
 fn default_seed() -> u64 {
     12345
@@ -269,6 +337,7 @@ impl Default for Server {
     fn default() -> Self {
         Self {
             max_sessions: default_max_sessions(),
+            scpi_port: default_scpi_port(),
         }
     }
 }
@@ -378,7 +447,13 @@ mod tests {
         assert_eq!(p.identity.manufacturer, "QuickVib");
         assert_eq!(p.identity.model, "M300-SCPI");
         assert_eq!(p.identity.serial_number, "0");
+        assert_eq!(p.device.lpf_hz, None);
+        assert_eq!(p.device.high_pass_hz, 0.0);
+        assert_eq!(p.device.velocity_range, DEFAULT_VELOCITY_RANGE);
+        assert_eq!(p.device.displacement_range, DEFAULT_DISPLACEMENT_RANGE);
+        assert_eq!(p.device.acceleration_range, DEFAULT_ACCELERATION_RANGE);
         assert_eq!(p.server.max_sessions, 8);
+        assert_eq!(p.server.scpi_port, DEFAULT_SCPI_PORT);
         assert_eq!(p.mock.signal.components.len(), 1);
         assert_eq!(p.mock.signal.seed, 12345);
     }
@@ -432,6 +507,64 @@ mod tests {
         let text = p.to_json_string().unwrap();
         let q = Project::from_json_str(&text).unwrap();
         assert_eq!(p, q);
+    }
+
+    #[test]
+    fn lpf_tracks_nyquist_until_it_is_pinned() {
+        let mut p = Project::from_json_str(MINIMAL).unwrap();
+        assert_eq!(p.device.effective_lpf_hz(), 500.0);
+        p.device.sample_rate_hz = 100_000.0;
+        assert_eq!(p.device.effective_lpf_hz(), 50_000.0);
+        p.device.lpf_hz = Some(20_000.0);
+        p.device.sample_rate_hz = 48_000.0;
+        assert_eq!(p.device.effective_lpf_hz(), 20_000.0);
+    }
+
+    #[test]
+    fn setup_fields_survive_a_round_trip() {
+        let json = r#"{
+            "schemaVersion": 1,
+            "name": "Setup",
+            "device": {
+                "sampleRateHz": 100000.0, "unit": "velocity_um_s",
+                "lpfHz": 22000.0, "highPassHz": 2.0,
+                "velocityRange": 2500.0, "displacementRange": 800.0, "accelerationRange": 50.0
+            },
+            "recording": { "durationSeconds": 1.0 },
+            "server": { "scpiPort": 5125 }
+        }"#;
+        let p = Project::from_json_str(json).unwrap();
+        assert_eq!(p.device.lpf_hz, Some(22_000.0));
+        assert_eq!(p.device.high_pass_hz, 2.0);
+        assert_eq!(p.device.velocity_range, 2500.0);
+        assert_eq!(p.device.displacement_range, 800.0);
+        assert_eq!(p.device.acceleration_range, 50.0);
+        assert_eq!(p.server.scpi_port, 5125);
+
+        let q = Project::from_json_str(&p.to_json_string().unwrap()).unwrap();
+        assert_eq!(p, q);
+    }
+
+    #[test]
+    fn range_follows_the_unit() {
+        let mut p = Project::from_json_str(MINIMAL).unwrap();
+        p.device.velocity_range = 10.0;
+        p.device.displacement_range = 20.0;
+        p.device.acceleration_range = 30.0;
+        assert_eq!(p.device.range_for(SampleUnit::VelocityUmPerSec), 10.0);
+        assert_eq!(p.device.range_for(SampleUnit::DisplacementUm), 20.0);
+        assert_eq!(p.device.range_for(SampleUnit::AccelerationMPerSec2), 30.0);
+        // MINIMAL is a displacement project.
+        assert_eq!(p.device.active_range(), 20.0);
+    }
+
+    #[test]
+    fn an_unset_lpf_stays_out_of_the_serialized_form() {
+        let p = Project::from_json_str(MINIMAL).unwrap();
+        let text = p.to_json_string().unwrap();
+        assert!(!text.contains("lpfHz"), "{text}");
+        assert!(text.contains("highPassHz"), "{text}");
+        assert!(text.contains("scpiPort"), "{text}");
     }
 
     #[test]

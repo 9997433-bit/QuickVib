@@ -46,6 +46,43 @@ pub fn validate(project: &Project) -> Result<(), ProjectError> {
         ));
     }
 
+    if let Some(lpf) = project.device.lpf_hz {
+        if !lpf.is_finite() || lpf <= 0.0 {
+            return Err(ProjectError::invalid(
+                "device.lpfHz",
+                format!("must be a finite positive number, found {lpf}"),
+            ));
+        }
+    }
+
+    let high_pass = project.device.high_pass_hz;
+    if !high_pass.is_finite() || high_pass < 0.0 {
+        return Err(ProjectError::invalid(
+            "device.highPassHz",
+            format!("must be a finite non-negative number, found {high_pass}"),
+        ));
+    }
+    let lpf = project.device.effective_lpf_hz();
+    if high_pass > 0.0 && high_pass >= lpf {
+        return Err(ProjectError::invalid(
+            "device.highPassHz",
+            format!("must be below the low-pass cutoff ({lpf} Hz), found {high_pass}"),
+        ));
+    }
+
+    for (field, range) in [
+        ("device.velocityRange", project.device.velocity_range),
+        ("device.displacementRange", project.device.displacement_range),
+        ("device.accelerationRange", project.device.acceleration_range),
+    ] {
+        if !range.is_finite() || range <= 0.0 {
+            return Err(ProjectError::invalid(
+                field,
+                format!("must be a finite positive number, found {range}"),
+            ));
+        }
+    }
+
     let duration = project.recording.duration_seconds;
     if !duration.is_finite() || duration <= 0.0 || duration > MAX_DURATION_SECONDS {
         return Err(ProjectError::out_of_range(
@@ -81,6 +118,13 @@ pub fn validate(project: &Project) -> Result<(), ProjectError> {
 
     if project.server.max_sessions == 0 {
         return Err(ProjectError::invalid("server.maxSessions", "must be >= 1"));
+    }
+
+    if project.server.scpi_port == 0 {
+        return Err(ProjectError::invalid(
+            "server.scpiPort",
+            "must be in 1..=65535",
+        ));
     }
 
     for (i, component) in project.mock.signal.components.iter().enumerate() {
@@ -230,6 +274,74 @@ mod tests {
             validate(&p).unwrap_err().scpi_error(),
             ScpiError::IllegalParameterValue
         );
+    }
+
+    #[test]
+    fn scpi_port_zero_is_rejected() {
+        let mut p = base();
+        p.server.scpi_port = 0;
+        assert_eq!(
+            validate(&p).unwrap_err().scpi_error(),
+            ScpiError::IllegalParameterValue
+        );
+    }
+
+    #[test]
+    fn lpf_must_be_positive_and_finite_when_set() {
+        for lpf in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut p = base();
+            p.device.lpf_hz = Some(lpf);
+            assert_eq!(
+                validate(&p).unwrap_err().scpi_error(),
+                ScpiError::IllegalParameterValue,
+                "lpf {lpf}"
+            );
+        }
+        let mut p = base();
+        p.device.lpf_hz = Some(400.0);
+        validate(&p).unwrap();
+    }
+
+    #[test]
+    fn high_pass_must_be_non_negative_and_below_the_low_pass() {
+        for hp in [-1.0, f64::NAN, f64::INFINITY] {
+            let mut p = base();
+            p.device.high_pass_hz = hp;
+            assert_eq!(
+                validate(&p).unwrap_err().scpi_error(),
+                ScpiError::IllegalParameterValue,
+                "highPassHz {hp}"
+            );
+        }
+
+        // base() runs at 1 kHz, so the tracking cutoff is 500 Hz.
+        let mut p = base();
+        p.device.high_pass_hz = 500.0;
+        let err = validate(&p).unwrap_err();
+        assert_eq!(err.scpi_error(), ScpiError::IllegalParameterValue);
+        assert!(err.to_string().contains("low-pass"), "{err}");
+
+        p.device.lpf_hz = Some(800.0);
+        validate(&p).unwrap();
+    }
+
+    #[test]
+    fn ranges_must_be_positive_and_finite() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            for pick in 0..3 {
+                let mut p = base();
+                match pick {
+                    0 => p.device.velocity_range = bad,
+                    1 => p.device.displacement_range = bad,
+                    _ => p.device.acceleration_range = bad,
+                }
+                assert_eq!(
+                    validate(&p).unwrap_err().scpi_error(),
+                    ScpiError::IllegalParameterValue,
+                    "range {bad} on field {pick}"
+                );
+            }
+        }
     }
 
     #[test]
