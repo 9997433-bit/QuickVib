@@ -9,6 +9,10 @@
 //! backend supplies the samples. The port is still bound and still framed, which is what
 //! keeps the accept, refusal and framing paths — the parts that carry the real risk on the
 //! M300 path — exercised by Linux CI rather than discovered on the bench.
+//!
+//! With `--backend tcp` the same framed samples are also handed to a
+//! [`quickvib_device::SampleSink`], which is what turns the inbound link from something the
+//! server merely counts into the source the engine records from.
 
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,7 +21,7 @@ use std::sync::Arc;
 use quickvib_core::{CancelToken, Level, Logger};
 use quickvib_device::framer::Framed;
 use quickvib_device::listener::Refusal;
-use quickvib_device::{ConnectionState, Framer, InboundDeviceServer};
+use quickvib_device::{ConnectionState, Framer, InboundDeviceServer, SampleSink};
 
 /// What the device link has seen since startup. Cheap to read from any thread.
 #[derive(Debug, Default)]
@@ -52,6 +56,7 @@ pub struct DeviceServer {
     inner: InboundDeviceServer,
     logger: Arc<dyn Logger>,
     stats: Arc<LinkStats>,
+    sink: Option<Arc<dyn SampleSink>>,
 }
 
 impl std::fmt::Debug for DeviceServer {
@@ -78,7 +83,15 @@ impl DeviceServer {
             inner,
             logger,
             stats: Arc::new(LinkStats::default()),
+            sink: None,
         })
+    }
+
+    /// Forward every framed batch to `sink`, which is how the `tcp` backend is fed.
+    #[must_use]
+    pub fn with_sink(mut self, sink: Arc<dyn SampleSink>) -> Self {
+        self.sink = Some(sink);
+        self
     }
 
     /// The bound address, including the OS-assigned port when `0` was requested.
@@ -120,9 +133,10 @@ impl DeviceServer {
 
         let logger = Arc::clone(&self.logger);
         let stats = Arc::clone(&self.stats);
+        let sink = self.sink.clone();
         let handler: Arc<dyn Fn(TcpStream, SocketAddr) + Send + Sync> =
             Arc::new(move |stream, peer| {
-                handle_link(&logger, &stats, stream, peer);
+                handle_link(&logger, &stats, sink.as_ref(), stream, peer);
             });
 
         self.inner.run(cancel, handler, &|peer, why| {
@@ -142,12 +156,16 @@ impl DeviceServer {
 fn handle_link(
     logger: &Arc<dyn Logger>,
     stats: &Arc<LinkStats>,
+    sink: Option<&Arc<dyn SampleSink>>,
     stream: TcpStream,
     peer: SocketAddr,
 ) {
     stats.connections.fetch_add(1, Ordering::Relaxed);
     if logger.enabled(Level::Info) {
         logger.log(Level::Info, "device", &format!("connected peer={peer}"));
+    }
+    if let Some(sink) = sink {
+        sink.on_connected(Some(peer));
     }
 
     let mut framer = Framer::new(stream);
@@ -157,12 +175,19 @@ fn handle_link(
                 stats
                     .samples
                     .fetch_add(framer.samples().len() as u64, Ordering::Relaxed);
+                if let Some(sink) = sink {
+                    sink.on_samples(framer.samples());
+                }
             }
             Ok(Framed::WouldBlock) => continue,
             Ok(Framed::Eof) => break "closed".to_owned(),
             Err(error) => break format!("failed: {error}"),
         }
     };
+
+    if let Some(sink) = sink {
+        sink.on_disconnected();
+    }
 
     if logger.enabled(Level::Info) {
         logger.log(
@@ -182,6 +207,7 @@ mod tests {
 
     use super::*;
     use quickvib_core::NullLogger;
+    use quickvib_device::SampleChannel;
     use std::io::Write;
     use std::time::Duration;
 
@@ -249,6 +275,34 @@ mod tests {
         assert!(wait_until(|| stats.samples() == 1));
 
         drop(device);
+        cancel.cancel();
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn framed_samples_reach_the_sink() {
+        let channel = Arc::new(SampleChannel::default());
+        let server = DeviceServer::bind("127.0.0.1:0", Vec::new(), Arc::new(NullLogger))
+            .unwrap()
+            .with_sink(Arc::clone(&channel) as Arc<dyn SampleSink>);
+        let addr = server.local_addr().unwrap();
+        let cancel = CancelToken::new();
+
+        let running = cancel.clone();
+        let join = std::thread::spawn(move || server.run(&running));
+
+        let mut device = TcpStream::connect(addr).unwrap();
+        assert!(channel.wait_connected(Duration::from_secs(5)));
+
+        for sample in [1.0_f32, -2.0, 3.5] {
+            device.write_all(&sample.to_le_bytes()).unwrap();
+        }
+        device.flush().unwrap();
+        assert!(wait_until(|| channel.received() == 3));
+
+        drop(device);
+        assert!(wait_until(|| !channel.is_connected()));
+
         cancel.cancel();
         join.join().unwrap();
     }

@@ -1,16 +1,18 @@
 //! Backend selection (`docs/PLAN.md` 7.4, 15).
 //!
-//! Mock is the default. The M300 backend is constructed only when it is explicitly selected,
-//! the `m300` feature is on, **and** the host is Windows; anything else is a startup error
-//! rather than a silent fallback, so a UTS never records mock data believing it came from
-//! hardware.
+//! Mock is the default. `tcp` records from whatever dials into the device port — a real M300
+//! or the `m300-sim` stand-in — using nothing but `std` sockets and the shared framer. The
+//! M300 backend is constructed only when it is explicitly selected, the `m300` feature is on,
+//! **and** the host is Windows; anything else is a startup error rather than a silent
+//! fallback, so a UTS never records mock data believing it came from hardware.
 
 use std::fmt;
 use std::sync::Arc;
 
 use quickvib_core::{BackendKind, Clock, SampleUnit};
 use quickvib_device::{
-    DeviceBackend, DeviceOpenOptions, MockBackend, MockSignalSpec, SignalComponent,
+    DeviceBackend, DeviceOpenOptions, MockBackend, MockSignalSpec, SampleChannel, SampleSink,
+    SignalComponent, StreamBackend,
 };
 use quickvib_project::Project;
 
@@ -62,6 +64,24 @@ pub fn select_kind(override_kind: Option<BackendKind>, project: Option<&Project>
         .unwrap_or_default()
 }
 
+/// An opened backend, plus whatever the caller still has to wire up for it.
+pub struct OpenedBackend {
+    /// The backend itself, already opened.
+    pub backend: Box<dyn DeviceBackend + Send>,
+    /// Where the device server must deliver framed samples. `None` for in-process backends,
+    /// which need no help from the listener.
+    pub sink: Option<Arc<dyn SampleSink>>,
+}
+
+impl fmt::Debug for OpenedBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenedBackend")
+            .field("connected", &self.backend.is_connected())
+            .field("socket_fed", &self.sink.is_some())
+            .finish()
+    }
+}
+
 /// Create and open the backend.
 ///
 /// # Errors
@@ -73,7 +93,7 @@ pub fn create(
     clock: Arc<dyn Clock>,
     device_port: u16,
     pace: bool,
-) -> Result<Box<dyn DeviceBackend + Send>, BackendError> {
+) -> Result<OpenedBackend, BackendError> {
     let sample_rate = project.map_or(1000.0, |p| p.device.sample_rate_hz);
     let unit = project.map_or(SampleUnit::VelocityUmPerSec, |p| p.device.unit);
 
@@ -97,7 +117,27 @@ pub fn create(
             backend
                 .open(&options)
                 .map_err(|source| BackendError::Open { kind, source })?;
-            Ok(Box::new(backend))
+            Ok(OpenedBackend {
+                backend: Box::new(backend),
+                sink: None,
+            })
+        }
+        BackendKind::Tcp => {
+            // The device server owns the socket and the framer; this backend only drains the
+            // channel between them, so there is nothing platform-specific and nothing unsafe
+            // on the whole path.
+            // The serial stays "0": nothing on this wire protocol reports one, so `*IDN?`
+            // falls back to the project's `identity.serialNumber` rather than inventing one.
+            let channel = Arc::new(SampleChannel::default());
+            let mut backend =
+                StreamBackend::new(Arc::clone(&channel), clock).with_model("QuickVib-Stream");
+            backend
+                .open(&options)
+                .map_err(|source| BackendError::Open { kind, source })?;
+            Ok(OpenedBackend {
+                backend: Box::new(backend),
+                sink: Some(channel as Arc<dyn SampleSink>),
+            })
         }
         BackendKind::M300 => Err(BackendError::Unavailable {
             kind,
@@ -187,27 +227,59 @@ mod tests {
     #[test]
     fn the_mock_backend_opens_with_the_project_settings() {
         let project = Project::from_json_str(PROJECT).unwrap();
-        let backend = create(BackendKind::Mock, Some(&project), clock(), 9123, false).unwrap();
-        assert!(backend.is_connected());
-        let capabilities = backend.capabilities().unwrap();
+        let opened = create(BackendKind::Mock, Some(&project), clock(), 9123, false).unwrap();
+        assert!(opened.backend.is_connected());
+        assert!(opened.sink.is_none(), "the mock needs no listener");
+        let capabilities = opened.backend.capabilities().unwrap();
         assert_eq!(capabilities.sample_rate_hz, 2000.0);
         assert_eq!(capabilities.unit, SampleUnit::DisplacementUm);
     }
 
     #[test]
     fn the_mock_backend_opens_without_a_project() {
-        let backend = create(BackendKind::Mock, None, clock(), 9123, false).unwrap();
-        assert!(backend.is_connected());
+        let opened = create(BackendKind::Mock, None, clock(), 9123, false).unwrap();
+        assert!(opened.backend.is_connected());
+    }
+
+    #[test]
+    fn the_tcp_backend_opens_disconnected_and_asks_for_a_sink() {
+        let project = Project::from_json_str(PROJECT).unwrap();
+        let opened = create(BackendKind::Tcp, Some(&project), clock(), 9123, false).unwrap();
+        // Nothing has dialled in yet, so `SYST:DEV:CONN?` is `0` and `INIT` is `-241`.
+        assert!(!opened.backend.is_connected());
+        let capabilities = opened.backend.capabilities().unwrap();
+        assert_eq!(capabilities.sample_rate_hz, 2000.0);
+        assert_eq!(capabilities.unit, SampleUnit::DisplacementUm);
+
+        let sink = opened.sink.expect("the tcp backend is fed by the listener");
+        sink.on_connected(None);
+        assert!(opened.backend.is_connected());
+    }
+
+    #[test]
+    fn the_tcp_backend_needs_no_project() {
+        let opened = create(BackendKind::Tcp, None, clock(), 9123, false).unwrap();
+        assert!(opened.sink.is_some());
+        assert_eq!(
+            opened.backend.capabilities().unwrap().sample_rate_hz,
+            1000.0
+        );
     }
 
     #[test]
     fn selecting_m300_here_is_an_error_not_a_silent_fallback() {
-        // `Box<dyn DeviceBackend>` is not `Debug`, so the success arm cannot be unwrapped.
         let Err(error) = create(BackendKind::M300, None, clock(), 9123, false) else {
             panic!("the M300 backend must not be constructible here");
         };
         assert!(matches!(error, BackendError::Unavailable { .. }));
         assert!(error.to_string().contains("m300"));
+    }
+
+    #[test]
+    fn the_project_can_select_the_tcp_backend() {
+        let mut project = Project::from_json_str(PROJECT).unwrap();
+        project.device.backend = BackendKind::Tcp;
+        assert_eq!(select_kind(None, Some(&project)), BackendKind::Tcp);
     }
 
     #[test]

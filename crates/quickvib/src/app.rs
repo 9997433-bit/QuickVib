@@ -209,19 +209,22 @@ impl AppBuilder {
         let device_port = resolve_device_port(&self.options, project.as_ref());
 
         let kind = backend_factory::select_kind(self.options.backend, project.as_ref());
-        let backend = match self.backend {
-            Some(backend) => backend,
-            None => backend_factory::create(
-                kind,
-                project.as_ref(),
-                Arc::clone(&clock),
-                device_port,
-                self.pace_mock,
-            )
-            .map_err(|e| match e {
-                BackendError::Unavailable { .. } => StartupError::BadArguments(e),
-                BackendError::Open { .. } => StartupError::Backend(e),
-            })?,
+        let (backend, sink) = match self.backend {
+            Some(backend) => (backend, None),
+            None => {
+                let opened = backend_factory::create(
+                    kind,
+                    project.as_ref(),
+                    Arc::clone(&clock),
+                    device_port,
+                    self.pace_mock,
+                )
+                .map_err(|e| match e {
+                    BackendError::Unavailable { .. } => StartupError::BadArguments(e),
+                    BackendError::Open { .. } => StartupError::Backend(e),
+                })?;
+                (opened.backend, opened.sink)
+            }
         };
 
         let engine = Engine::new(EngineConfig {
@@ -259,13 +262,17 @@ impl AppBuilder {
             .as_ref()
             .map(|p| p.device.allowed_peers.clone())
             .unwrap_or_default();
-        let device = DeviceServer::bind(&device_addr, allowed_peers, Arc::clone(&logger)).map_err(
-            |source| StartupError::Bind {
+        let mut device = DeviceServer::bind(&device_addr, allowed_peers, Arc::clone(&logger))
+            .map_err(|source| StartupError::Bind {
                 what: "device",
                 addr: device_addr,
                 source,
-            },
-        )?;
+            })?;
+        // A socket-fed backend has no transport of its own: the listener bound just above is
+        // its transport, so the framed samples have to be handed across.
+        if let Some(sink) = sink {
+            device = device.with_sink(sink);
+        }
 
         Ok(App {
             engine,

@@ -109,15 +109,19 @@ USAGE:
     quickvib [OPTIONS]
 
 OPTIONS:
-    --project <path>        Load this project at startup (default: auto-load the last one)
-    --scpi-port <n>         Port the UTS connects to        [default: {DEFAULT_SCPI_PORT}]
-    --device-port <n>       Port the M300 dials in on       [default: {DEFAULT_DEVICE_PORT}]
-    --headless              Structured log lines only, no interactive output
-    --backend <mock|m300>   Override the project's backend  [default: mock]
-    --no-auto-load          Do not auto-load the last project
-    --log-level <level>     trace|debug|info|warn|error     [default: info]
-    --version               Print the version and exit
-    --help                  Print this help and exit
+    --project <path>            Load this project at startup (default: auto-load the last one)
+    --scpi-port <n>             Port the UTS connects to        [default: {DEFAULT_SCPI_PORT}]
+    --device-port <n>           Port the M300 dials in on       [default: {DEFAULT_DEVICE_PORT}]
+    --headless                  Structured log lines only, no interactive output
+    --backend <mock|tcp|m300>   Override the project's backend  [default: mock]
+                                mock = in-process signal generator
+                                tcp  = record from whatever dials into --device-port
+                                       (a real M300, or the m300-sim stand-in)
+                                m300 = native SDK; Windows + --features m300 only
+    --no-auto-load              Do not auto-load the last project
+    --log-level <level>         trace|debug|info|warn|error     [default: info]
+    --version                   Print the version and exit
+    --help                      Print this help and exit
 
 EXIT CODES:
     0  clean shutdown
@@ -194,7 +198,7 @@ pub fn parse(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
                 options.backend = Some(text.parse().map_err(|_| CliError::BadValue {
                     flag: "--backend",
                     value: text.clone().into_owned(),
-                    reason: "expected 'mock' or 'm300'".to_owned(),
+                    reason: "expected 'mock', 'tcp' or 'm300'".to_owned(),
                 })?);
             }
             "--log-level" => {
@@ -355,6 +359,10 @@ mod tests {
         assert_eq!(
             options(&["--backend=m300"]).backend,
             Some(BackendKind::M300)
+        );
+        assert_eq!(
+            options(&["--backend", "tcp"]).backend,
+            Some(BackendKind::Tcp)
         );
     }
 
