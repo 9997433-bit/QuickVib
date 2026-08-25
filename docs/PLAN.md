@@ -1461,11 +1461,18 @@ Chinese section covering the same ground — not an abridged translation.
 
 ## 25. Status and next step
 
-**Nothing in this plan has been implemented, and implementation has not been authorized.** The
-repository still contains only `README.md` and this document. The language decision (Rust) is locked
-per the requester's instruction; the remaining decisions are recorded in §4 with their status, and
-the questions that would change them are in §21.
+**Phases 0–5 of §19 are implemented: the mock path is end-to-end usable.** A UTS can point at
+`quickvib.exe` (or the Linux build) and run the full sequence in §5.2 against the deterministic mock
+backend — load a project, configure a duration, record, wait, read the samples and the derived
+scalars, and export CSV or TXT. `cargo test --workspace` and `cargo clippy --workspace --all-targets
+-- -D warnings` are green on Linux, and `cargo build --release --target x86_64-pc-windows-gnu`
+produces the Windows executable.
 
-The next step is a **review of this document**, followed by explicit approval to begin **Phase 0**
-(§19) — at which point the first files created are `Cargo.toml`, `rust-toolchain.toml`, and the crate
-skeletons, and not before.
+What is deliberately *not* implemented is **Phase 6**, the M300 native backend: `quickvib-m300`
+holds the crate boundary, the `bindgen` hook and the library resolver, but no `extern "C"`
+declarations and no SDK calls, and there is no fake DLL (D21). Selecting `--backend m300` is a
+startup error rather than a silent fallback to the mock. Phase 6 stays gated on the SDK questions in
+§21.1.
+
+The next step is therefore either **Phase 6**, once those questions are answered, or **Phase 7**
+(docs and release polish), which does not depend on them.

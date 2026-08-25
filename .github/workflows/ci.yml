@@ -66,6 +66,10 @@ jobs:
             target
           key: ${{ runner.os }}-crosswin-${{ hashFiles('**/Cargo.lock') }}
       - run: cargo build --release --target x86_64-pc-windows-gnu --locked
+      # The FFI crate cannot be executed in CI, but compiling it for the Windows target
+      # catches signature and type errors here rather than on the bench (PLAN 18.1).
+      - run: cargo check --target x86_64-pc-windows-gnu -p quickvib-m300 --locked
+      - run: cargo check --target x86_64-pc-windows-gnu -p quickvib --features m300 --locked
       - uses: actions/upload-artifact@v4
         with:
           name: quickvib-x86_64-pc-windows-gnu
