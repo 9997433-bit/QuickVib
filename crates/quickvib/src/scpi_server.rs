@@ -281,9 +281,7 @@ fn session_loop(
             Ok(ReadOutcome::Unterminated) => {
                 // IEEE 488.2 wants a terminator, so the fragment is not executed; the peer is
                 // already gone, so there is nothing left to serve after recording the error.
-                engine.push_error(
-                    ScpiError::CommandError.detail("line not terminated before EOF"),
-                );
+                engine.push_error(ScpiError::CommandError.detail("line not terminated before EOF"));
                 return;
             }
             Err(_) => return,
