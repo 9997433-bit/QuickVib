@@ -253,6 +253,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "quickvib-sim"
+version = "1.0.0"
+dependencies = [
+ "quickvib",
+ "quickvib-core",
+ "quickvib-device",
+ "quickvib-testkit",
+ "tempfile",
+]
+
+[[package]]
 name = "quickvib-testkit"
 version = "1.0.0"
 
