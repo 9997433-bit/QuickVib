@@ -5,6 +5,11 @@
 //! (`docs/PLAN.md` 7.1): a graceful drain would need either an `unsafe` console-control shim
 //! or a dependency the zero-dependency stance excludes, and the normal shutdown path for a
 //! test executive is `ABOR` followed by closing the socket.
+//!
+//! `--headless` is the UTS-facing mode and never opens a window. Without it, a build carrying
+//! the `gui` feature moves both accept loops onto background threads and puts the desktop
+//! window on the main thread; a build without the feature — the default, and what CI
+//! cross-compiles — serves from the console exactly as it always has.
 
 #![forbid(unsafe_code)]
 
@@ -46,8 +51,30 @@ fn main() {
         }
     }
 
-    app.run();
+    if headless {
+        app.run();
+    } else {
+        serve_with_window(app);
+    }
     exit(EXIT_OK);
+}
+
+/// The interactive path: the window when this build has one and the display allows it,
+/// otherwise the same foreground accept loops as `--headless`.
+#[cfg(feature = "gui")]
+fn serve_with_window(app: quickvib::App) {
+    if let Err((error, handle)) = quickvib::gui::run(app) {
+        eprintln!("quickvib: {error}");
+        eprintln!("quickvib: serving from the console; use --headless to skip the window");
+        handle.wait();
+    }
+}
+
+#[cfg(not(feature = "gui"))]
+fn serve_with_window(app: quickvib::App) {
+    // Built without the `gui` feature: there is no window to open, so the interactive mode is
+    // the banner that has already been printed plus the ordinary accept loops.
+    app.run();
 }
 
 /// Flush both streams before leaving, since `std::process::exit` runs no destructors.

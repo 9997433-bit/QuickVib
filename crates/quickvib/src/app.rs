@@ -449,6 +449,12 @@ impl App {
         self.headless
     }
 
+    /// Which backend this process opened.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend_kind
+    }
+
     /// Run both accept loops until the cancellation token fires.
     ///
     /// The device accept loop gets its own thread; this one hosts the SCPI accept loop, so
@@ -541,6 +547,17 @@ impl AppHandle {
     #[must_use]
     pub fn device_addr(&self) -> std::net::SocketAddr {
         self.device_addr.unwrap_or(unspecified())
+    }
+
+    /// Block until the accept loops stop on their own.
+    ///
+    /// The GUI path uses this when the window could not be opened: the servers are already
+    /// running behind it, and the process should go on serving the UTS from the console
+    /// rather than exit because there was no display.
+    pub fn wait(mut self) {
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
     }
 
     /// Stop both accept loops and wait for the thread to finish.

@@ -19,6 +19,8 @@ pub mod app;
 pub mod backend_factory;
 pub mod cli;
 pub mod device_server;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod log;
 pub mod scpi_server;
 
