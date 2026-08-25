@@ -31,7 +31,9 @@ impl SystemClock {
     #[must_use]
     #[allow(clippy::disallowed_methods)] // D20: this module is the single legal call site.
     pub fn new() -> Self {
-        Self { origin: Instant::now() }
+        Self {
+            origin: Instant::now(),
+        }
     }
 }
 
@@ -78,7 +80,10 @@ impl TestClock {
     #[must_use]
     pub fn new(wall_start: SystemTime) -> Self {
         Self {
-            state: Mutex::new(TestClockState { monotonic: Duration::ZERO, wall: wall_start }),
+            state: Mutex::new(TestClockState {
+                monotonic: Duration::ZERO,
+                wall: wall_start,
+            }),
             changed: Condvar::new(),
         }
     }
@@ -107,11 +112,17 @@ impl Default for TestClock {
 
 impl Clock for TestClock {
     fn monotonic(&self) -> Duration {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner).monotonic
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .monotonic
     }
 
     fn wall_clock(&self) -> SystemTime {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner).wall
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .wall
     }
 
     fn sleep(&self, dur: Duration) {
@@ -178,7 +189,10 @@ mod tests {
         assert_eq!(clock.monotonic(), Duration::ZERO);
         clock.advance(Duration::from_millis(1500));
         assert_eq!(clock.monotonic(), Duration::from_millis(1500));
-        assert_eq!(format_iso8601(clock.wall_clock()), "1970-01-01T00:00:01.500Z");
+        assert_eq!(
+            format_iso8601(clock.wall_clock()),
+            "1970-01-01T00:00:01.500Z"
+        );
     }
 
     #[test]

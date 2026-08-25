@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "name": "Test",
+  "description": "Sample QuickVib project: 5 s velocity capture, CSV export.",
+  "device": {
+    "backend": "mock",
+    "port": 9123,
+    "sampleRateHz": 100000,
+    "unit": "velocity_um_s",
+    "allowedPeers": [],
+    "connectTimeoutSeconds": 30
+  },
+  "recording": {
+    "durationSeconds": 5.0,
+    "timeoutMultiplier": 2.0
+  },
+  "measurement": {
+    "removeDc": false,
+    "responseDecimals": 4
+  },
+  "export": {
+    "format": "CSV",
+    "directory": "./out",
+    "includeHeader": true
+  },
+  "identity": {
+    "manufacturer": "QuickVib",
+    "model": "M300-SCPI",
+    "serialNumber": "SN-0001",
+    "firmwareVersion": "1.0.0"
+  },
+  "mock": {
+    "signal": {
+      "components": [
+        { "frequencyHz": 120.0, "amplitude": 250.0, "phaseDeg": 0.0 },
+        { "frequencyHz": 360.0, "amplitude": 40.0, "phaseDeg": 90.0 }
+      ],
+      "noiseStdDev": 2.5,
+      "seed": 12345
+    }
+  }
+}

@@ -1,0 +1,244 @@
+//! Validation rules applied after deserialization (`docs/PLAN.md` 12).
+
+use crate::error::ProjectError;
+use crate::schema::{Project, SCHEMA_VERSION};
+
+/// Longest capture QuickVib will accept, in seconds.
+pub const MAX_DURATION_SECONDS: f64 = 3600.0;
+
+/// Check every rule the schema table declares.
+///
+/// # Errors
+/// [`ProjectError::Invalid`] for a bad value, [`ProjectError::OutOfRange`] for a value outside
+/// its permitted range or one that trips the capture-size guard.
+pub fn validate(project: &Project) -> Result<(), ProjectError> {
+    if project.schema_version != SCHEMA_VERSION {
+        return Err(ProjectError::invalid(
+            "schemaVersion",
+            format!(
+                "expected {SCHEMA_VERSION}, found {}",
+                project.schema_version
+            ),
+        ));
+    }
+
+    if project.name.trim().is_empty() {
+        return Err(ProjectError::invalid("name", "must not be empty"));
+    }
+
+    let rate = project.device.sample_rate_hz;
+    if !rate.is_finite() || rate <= 0.0 {
+        return Err(ProjectError::invalid(
+            "device.sampleRateHz",
+            format!("must be a finite positive number, found {rate}"),
+        ));
+    }
+
+    if project.device.port == 0 {
+        return Err(ProjectError::invalid("device.port", "must be in 1..=65535"));
+    }
+
+    let connect = project.device.connect_timeout_seconds;
+    if !connect.is_finite() || connect < 0.0 {
+        return Err(ProjectError::invalid(
+            "device.connectTimeoutSeconds",
+            format!("must be a finite non-negative number, found {connect}"),
+        ));
+    }
+
+    let duration = project.recording.duration_seconds;
+    if !duration.is_finite() || duration <= 0.0 || duration > MAX_DURATION_SECONDS {
+        return Err(ProjectError::out_of_range(
+            "recording.durationSeconds",
+            format!("must be in (0, {MAX_DURATION_SECONDS}], found {duration}"),
+        ));
+    }
+
+    let multiplier = project.recording.timeout_multiplier;
+    if !multiplier.is_finite() || multiplier < 1.0 {
+        return Err(ProjectError::invalid(
+            "recording.timeoutMultiplier",
+            format!("must be >= 1.0, found {multiplier}"),
+        ));
+    }
+
+    if project.recording.max_capture_bytes == 0 {
+        return Err(ProjectError::invalid(
+            "recording.maxCaptureBytes",
+            "must be > 0",
+        ));
+    }
+
+    if project.measurement.response_decimals > 9 {
+        return Err(ProjectError::invalid(
+            "measurement.responseDecimals",
+            format!(
+                "must be in 0..=9, found {}",
+                project.measurement.response_decimals
+            ),
+        ));
+    }
+
+    if project.server.max_sessions == 0 {
+        return Err(ProjectError::invalid("server.maxSessions", "must be >= 1"));
+    }
+
+    for (i, component) in project.mock.signal.components.iter().enumerate() {
+        if !component.frequency_hz.is_finite()
+            || !component.amplitude.is_finite()
+            || !component.phase_deg.is_finite()
+        {
+            return Err(ProjectError::invalid(
+                "mock.signal.components",
+                format!("component {i} has a non-finite field"),
+            ));
+        }
+    }
+
+    let noise = project.mock.signal.noise_std_dev;
+    if !noise.is_finite() || noise < 0.0 {
+        return Err(ProjectError::invalid(
+            "mock.signal.noiseStdDev",
+            format!("must be a finite non-negative number, found {noise}"),
+        ));
+    }
+
+    // The capture-size guard, computed with checked arithmetic (7.9).
+    project
+        .expected_samples(duration)
+        .map_err(|_| {
+            ProjectError::out_of_range(
+                "recording.durationSeconds",
+                format!(
+                    "ceil({duration} * {rate}) * 4 bytes exceeds maxCaptureBytes ({})",
+                    project.recording.max_capture_bytes
+                ),
+            )
+        })
+        .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use quickvib_core::ScpiError;
+
+    fn base() -> Project {
+        Project::from_json_str(
+            r#"{
+                "schemaVersion": 1,
+                "name": "Base",
+                "device": { "sampleRateHz": 1000.0, "unit": "velocity_um_s" },
+                "recording": { "durationSeconds": 1.0 }
+            }"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn base_project_is_valid() {
+        validate(&base()).unwrap();
+    }
+
+    #[test]
+    fn schema_version_mismatch_is_rejected() {
+        let mut p = base();
+        p.schema_version = 2;
+        let err = validate(&p).unwrap_err();
+        assert_eq!(err.scpi_error(), ScpiError::IllegalParameterValue);
+    }
+
+    #[test]
+    fn sample_rate_must_be_positive_and_finite() {
+        for rate in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut p = base();
+            p.device.sample_rate_hz = rate;
+            assert_eq!(
+                validate(&p).unwrap_err().scpi_error(),
+                ScpiError::IllegalParameterValue,
+                "rate {rate}"
+            );
+        }
+    }
+
+    #[test]
+    fn duration_range_is_enforced() {
+        for duration in [0.0, -1.0, 3600.1, f64::NAN] {
+            let mut p = base();
+            p.recording.duration_seconds = duration;
+            assert_eq!(
+                validate(&p).unwrap_err().scpi_error(),
+                ScpiError::DataOutOfRange,
+                "duration {duration}"
+            );
+        }
+        let mut p = base();
+        p.recording.duration_seconds = 3600.0;
+        p.recording.max_capture_bytes = u64::MAX;
+        validate(&p).unwrap();
+    }
+
+    #[test]
+    fn timeout_multiplier_floor_is_one() {
+        let mut p = base();
+        p.recording.timeout_multiplier = 0.5;
+        assert_eq!(
+            validate(&p).unwrap_err().scpi_error(),
+            ScpiError::IllegalParameterValue
+        );
+    }
+
+    #[test]
+    fn response_decimals_range_is_enforced() {
+        let mut p = base();
+        p.measurement.response_decimals = 10;
+        assert_eq!(
+            validate(&p).unwrap_err().scpi_error(),
+            ScpiError::IllegalParameterValue
+        );
+        p.measurement.response_decimals = 9;
+        validate(&p).unwrap();
+    }
+
+    #[test]
+    fn capture_cap_violation_is_out_of_range() {
+        let mut p = base();
+        p.device.sample_rate_hz = 100_000.0;
+        p.recording.duration_seconds = 3600.0;
+        let err = validate(&p).unwrap_err();
+        assert_eq!(err.scpi_error(), ScpiError::DataOutOfRange);
+        assert!(err.to_string().contains("maxCaptureBytes"));
+    }
+
+    #[test]
+    fn empty_name_is_rejected() {
+        let mut p = base();
+        p.name = "   ".to_owned();
+        assert_eq!(
+            validate(&p).unwrap_err().scpi_error(),
+            ScpiError::IllegalParameterValue
+        );
+    }
+
+    #[test]
+    fn max_sessions_floor_is_one() {
+        let mut p = base();
+        p.server.max_sessions = 0;
+        assert_eq!(
+            validate(&p).unwrap_err().scpi_error(),
+            ScpiError::IllegalParameterValue
+        );
+    }
+
+    #[test]
+    fn negative_noise_is_rejected() {
+        let mut p = base();
+        p.mock.signal.noise_std_dev = -1.0;
+        assert_eq!(
+            validate(&p).unwrap_err().scpi_error(),
+            ScpiError::IllegalParameterValue
+        );
+    }
+}

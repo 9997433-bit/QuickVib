@@ -43,10 +43,13 @@ quickvib-scpi = { path = "crates/quickvib-scpi", version = "1.0.0" }
 quickvib-engine = { path = "crates/quickvib-engine", version = "1.0.0" }
 quickvib-testkit = { path = "crates/quickvib-testkit", version = "1.0.0" }
 
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-libloading = "0.8"
-tempfile = "3"
+# Upper bounds keep the graph inside the pinned MSRV (rust-toolchain.toml). Cargo.lock is
+# committed (D26) so the exact versions are reproducible; these ceilings stop a fresh
+# `cargo update` from silently pulling an edition-2024 crate the MSRV cannot parse.
+serde = { version = ">=1.0, <1.0.220", features = ["derive"] }
+serde_json = ">=1.0, <1.0.135"
+libloading = ">=0.8, <0.9"
+tempfile = ">=3.10, <3.15"
 
 [workspace.lints.rust]
 missing_docs = "deny"

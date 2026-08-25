@@ -57,7 +57,11 @@ impl CancelToken {
     /// Idempotent: a second call does nothing.
     pub fn cancel(&self) {
         let hooks = {
-            let mut guard = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut guard = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if guard.cancelled {
                 return;
             }
@@ -77,7 +81,11 @@ impl CancelToken {
     /// is how a reader parked in a blocking `read` is woken: the hook calls
     /// `TcpStream::shutdown` on a cloned handle.
     pub fn on_cancel(&self, hook: impl Fn() + Send + Sync + 'static) {
-        let mut guard = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut guard = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if guard.cancelled {
             drop(guard);
             hook();
@@ -89,7 +97,11 @@ impl CancelToken {
     /// Block until cancelled or until `timeout` elapses. Returns `true` if cancelled.
     #[must_use]
     pub fn wait_timeout(&self, timeout: Duration) -> bool {
-        let guard = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let guard = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let (guard, _) = self
             .inner
             .changed

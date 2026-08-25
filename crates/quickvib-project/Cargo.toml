@@ -1,5 +1,6 @@
 [package]
 name = "quickvib-project"
+description = "QuickVib JSON project schema: load, save, validate and the last-project record."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,3 +11,11 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+quickvib-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

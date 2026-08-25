@@ -65,7 +65,10 @@ impl FromStr for ExportFormat {
         } else if s.eq_ignore_ascii_case("txt") {
             Ok(Self::Txt)
         } else {
-            Err(ParseEnumError { what: "export format", input: s.to_owned() })
+            Err(ParseEnumError {
+                what: "export format",
+                input: s.to_owned(),
+            })
         }
     }
 }
@@ -106,7 +109,10 @@ impl FromStr for BackendKind {
         } else if s.eq_ignore_ascii_case("m300") {
             Ok(Self::M300)
         } else {
-            Err(ParseEnumError { what: "backend", input: s.to_owned() })
+            Err(ParseEnumError {
+                what: "backend",
+                input: s.to_owned(),
+            })
         }
     }
 }

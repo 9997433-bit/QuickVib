@@ -44,7 +44,11 @@ impl SampleUnit {
     /// Every unit, in declaration order. Useful for error messages and exhaustive tests.
     #[must_use]
     pub const fn all() -> &'static [SampleUnit] {
-        &[Self::VelocityUmPerSec, Self::DisplacementUm, Self::AccelerationMPerSec2]
+        &[
+            Self::VelocityUmPerSec,
+            Self::DisplacementUm,
+            Self::AccelerationMPerSec2,
+        ]
     }
 }
 
@@ -78,7 +82,9 @@ impl FromStr for SampleUnit {
                 return Ok(*unit);
             }
         }
-        Err(ParseUnitError { input: s.to_owned() })
+        Err(ParseUnitError {
+            input: s.to_owned(),
+        })
     }
 }
 

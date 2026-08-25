@@ -45,7 +45,13 @@ impl Level {
     /// # Errors
     /// Returns `Err(())` if the string names no level.
     pub fn parse(s: &str) -> Result<Self, ()> {
-        for level in [Self::Trace, Self::Debug, Self::Info, Self::Warn, Self::Error] {
+        for level in [
+            Self::Trace,
+            Self::Debug,
+            Self::Info,
+            Self::Warn,
+            Self::Error,
+        ] {
             if s.eq_ignore_ascii_case(level.as_str()) {
                 return Ok(level);
             }

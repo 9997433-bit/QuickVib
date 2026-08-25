@@ -89,7 +89,10 @@ impl ScpiError {
     /// carried so the log line can say *why* without the UTS seeing a non-standard message.
     #[must_use]
     pub fn detail(self, detail: impl Into<String>) -> ScpiErrorEntry {
-        ScpiErrorEntry { error: self, detail: Some(detail.into()) }
+        ScpiErrorEntry {
+            error: self,
+            detail: Some(detail.into()),
+        }
     }
 
     /// Every catalogued error, in code order. Used by the documentation-drift test.
@@ -135,7 +138,10 @@ impl ScpiErrorEntry {
     /// A queue entry with no extra detail.
     #[must_use]
     pub const fn new(error: ScpiError) -> Self {
-        Self { error, detail: None }
+        Self {
+            error,
+            detail: None,
+        }
     }
 
     /// The `SYST:ERR?` wire form of this entry.
@@ -169,8 +175,14 @@ mod tests {
     #[test]
     fn wire_format_matches_scpi() {
         assert_eq!(ScpiError::NoError.to_string(), "0,\"No error\"");
-        assert_eq!(ScpiError::UndefinedHeader.to_string(), "-113,\"Undefined header\"");
-        assert_eq!(ScpiError::TimeoutError.to_string(), "-365,\"Time out error\"");
+        assert_eq!(
+            ScpiError::UndefinedHeader.to_string(),
+            "-113,\"Undefined header\""
+        );
+        assert_eq!(
+            ScpiError::TimeoutError.to_string(),
+            "-365,\"Time out error\""
+        );
     }
 
     #[test]
