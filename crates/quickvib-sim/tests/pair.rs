@@ -62,6 +62,7 @@ fn instrument(project_json: &str) -> (AppHandle, tempfile::TempDir) {
         project: Some(path),
         scpi_port: Some(0),
         device_port: Some(0),
+        bind_host: None,
         headless: true,
         backend: Some(BackendKind::Tcp),
         no_auto_load: true,

@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bind_host;
 pub mod error;
 pub mod last_project;
 pub mod schema;
@@ -29,6 +30,7 @@ pub mod validate;
 
 mod serde_enums;
 
+pub use bind_host::{join_host_port, parse_bind_host, BindHostError, DEFAULT_BIND_HOST};
 pub use error::ProjectError;
 pub use last_project::{state_dir, LastProjectStore, STATE_DIR_ENV};
 pub use schema::{

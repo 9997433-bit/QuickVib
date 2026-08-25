@@ -1,5 +1,6 @@
 //! Validation rules applied after deserialization (`docs/PLAN.md` 12).
 
+use crate::bind_host::parse_bind_host;
 use crate::error::ProjectError;
 use crate::schema::{Project, SCHEMA_VERSION};
 
@@ -131,6 +132,12 @@ pub fn validate(project: &Project) -> Result<(), ProjectError> {
             "server.scpiPort",
             "must be in 1..=65535",
         ));
+    }
+
+    // A host that cannot be a host at all is worth catching here; whether it resolves and can
+    // be bound is only knowable at startup, where it is a bind failure.
+    if let Err(reason) = parse_bind_host(&project.server.bind_host) {
+        return Err(ProjectError::invalid("server.bindHost", reason.to_string()));
     }
 
     // Both listeners are bound at startup, so a project that names one port twice cannot be
@@ -303,6 +310,28 @@ mod tests {
             validate(&p).unwrap_err().scpi_error(),
             ScpiError::IllegalParameterValue
         );
+    }
+
+    #[test]
+    fn an_unusable_bind_host_is_rejected() {
+        for bad in ["", "  ", "127.0.0.1:5025", "0.0.0.0/0"] {
+            let mut p = base();
+            p.server.bind_host = bad.to_owned();
+            assert_eq!(
+                validate(&p).unwrap_err().scpi_error(),
+                ScpiError::IllegalParameterValue,
+                "bindHost {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bind_host_that_names_one_interface_is_accepted() {
+        for good in ["0.0.0.0", "127.0.0.1", "::1", "[::1]", "localhost"] {
+            let mut p = base();
+            p.server.bind_host = good.to_owned();
+            validate(&p).unwrap_or_else(|e| panic!("bindHost {good:?}: {e}"));
+        }
     }
 
     #[test]

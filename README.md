@@ -246,6 +246,7 @@ Exit codes: `0` clean shutdown, `2` bad arguments, `3` port bind failure, `4` pr
 | `--project <path>` | file path | *(auto-load-last)* | Load this project at startup. Failure is fatal (exit `4`) |
 | `--scpi-port <n>` | 1–65535 | *(project, else `5025`)* | SCPI server port (the UTS connects in). Overrides `server.scpiPort` |
 | `--device-port <n>` | 1–65535 | *(project, else `9123`)* | Device server port (the M300 connects in). Overrides `device.port` |
+| `--bind <host>` | IP literal or host name | *(project, else `0.0.0.0`)* | Interface **both** listeners bind. `0.0.0.0` accepts connections from anywhere the network allows; `127.0.0.1` keeps the SCPI and device links on this machine, which is the right choice when the UTS and the M300 (or `m300-sim`) run on the same PC. Overrides `server.bindHost`. An IPv6 literal may be written bare or bracketed (`::1` or `[::1]`) |
 | `--headless` | flag | off | No window and no interactive console UI; structured log lines only |
 | `--backend <mock\|tcp\|m300>` | enum | *(project, else `mock`)* | Override the project's backend. `mock` synthesizes samples in process; `tcp` records the little-endian `f32` stream arriving on `--device-port` (a real M300, or `m300-sim`); `m300` uses the native SDK and, on a non-Windows host or in a build without the `m300` feature, is a startup error — never a silent fallback |
 | `--no-auto-load` | flag | off | Suppress auto-load-last, for a clean UTS run |
@@ -254,7 +255,8 @@ Exit codes: `0` clean shutdown, `2` bad arguments, `3` port bind failure, `4` pr
 | `--help` | flag | — | Print usage and exit `0` |
 
 `--flag=value` and `--flag value` are both accepted; `--` terminates flag parsing. Unknown flags,
-missing values, and out-of-range ports exit `2` with usage on stderr.
+missing values, out-of-range ports, and a `--bind` host that is neither an IP address nor a host
+name exit `2` with usage on stderr.
 
 ## 5. How it works
 
@@ -465,6 +467,7 @@ lives at `samples/Test.proj`.
 | `identity.*` | see above | The four `*IDN?` fields, so an existing UTS ID check can be satisfied |
 | `server.maxSessions` | `8` | Concurrent SCPI session cap |
 | `server.scpiPort` | `5025` | SCPI listen port stored in the project; `--scpi-port` overrides. Must differ from `device.port` |
+| `server.bindHost` | `"0.0.0.0"` | Interface both listeners bind; `--bind` overrides. `"127.0.0.1"` keeps both links on this machine. An IP literal or a host name — the name is resolved when the listener binds, so a name that does not resolve is exit `3`, not a load failure |
 | `mock.signal.*` | one 100 Hz component | Sine components, Gaussian noise σ, and PRNG seed |
 
 The most recently loaded or saved project is remembered (`%LOCALAPPDATA%\QuickVib\` on Windows,
@@ -674,7 +677,7 @@ is what ships.
 
 | Symptom | Cause and fix |
 | --- | --- |
-| Exit code `3` at startup | A port is already in use. Another QuickVib instance, or something else on `5025`/`9123`. Pick a free port with `--scpi-port` / `--device-port` |
+| Exit code `3` at startup | A listener could not be bound. Usually a port already in use — another QuickVib instance, or something else on `5025`/`9123`, so pick a free port with `--scpi-port` / `--device-port`. It is also what a `--bind` / `server.bindHost` host that does not resolve, or that is not an address on this machine, looks like; the message names the address that was attempted |
 | No window appears | Either the binary was built without `--features gui`, or `--headless` was passed, or the host has no display — the last two print a line saying so and go on serving from the console. Both servers run either way |
 | A GUI edit did not reach the instrument | Only **应用 / Apply** pushes the form into the running engine. Ports, backend, sample rate and data type are saved but need a restart, which Apply says explicitly |
 | The window shows a port the UTS cannot connect to | Read **实际监听端口 / Live listening ports** in the status bar, not the editable 项目端口 fields: `--scpi-port` / `--device-port` override the project file, and the window labels the two separately for exactly this reason ([§2.1](#live-ports-vs-project-ports)) |
@@ -949,6 +952,7 @@ QuickVib 在两条链路上**都是 TCP 服务端**，从不主动外连。进�
 | `--project <path>` | 文件路径 | *(自动加载上次工程)* | 启动时加载该工程，失败即致命错误（退出码 `4`） |
 | `--scpi-port <n>` | 1–65535 | *(工程配置，否则 `5025`)* | SCPI 服务端口（UTS 连入），覆盖 `server.scpiPort` |
 | `--device-port <n>` | 1–65535 | *(工程配置，否则 `9123`)* | 设备服务端口（M300 连入），覆盖 `device.port` |
+| `--bind <host>` | IP 字面量或主机名 | *(工程配置，否则 `0.0.0.0`)* | **两个**监听器绑定的网卡地址。`0.0.0.0` 表示网络可达的任何来源都能连入；`127.0.0.1` 则把 SCPI 与设备两条链路都限制在本机——当 UTS 与 M300（或 `m300-sim`）都在同一台 PC 上时应当这样配置。覆盖 `server.bindHost`。IPv6 字面量可写作 `::1` 或 `[::1]` |
 | `--headless` | 开关 | 关 | 不打开窗口，仅输出结构化日志 |
 | `--backend <mock\|tcp\|m300>` | 枚举 | *(工程配置，否则 `mock`)* | 覆盖工程中的后端选择。`mock` 在进程内合成信号；`tcp` 记录从 `--device-port` 连入的小端 `f32` 数据流（真实 M300，或 `m300-sim`）；`m300` 走原生 SDK，在非 Windows 主机、或未启用 `m300` feature 的构建上指定它会直接启动失败，绝不静默回退 |
 | `--no-auto-load` | 开关 | 关 | 禁用「自动加载上次工程」，保证运行环境干净 |
@@ -956,8 +960,8 @@ QuickVib 在两条链路上**都是 TCP 服务端**，从不主动外连。进�
 | `--version` | 开关 | — | 打印版本号并以 `0` 退出 |
 | `--help` | 开关 | — | 打印用法并以 `0` 退出 |
 
-`--flag=value` 与 `--flag value` 两种写法都支持；`--` 终止参数解析。未知参数、缺少取值、端口越界都会
-以 `2` 退出，并在 stderr 打印用法。
+`--flag=value` 与 `--flag value` 两种写法都支持；`--` 终止参数解析。未知参数、缺少取值、端口越界，以及
+`--bind` 传入既不是 IP 地址也不是主机名的文本，都会以 `2` 退出，并在 stderr 打印用法。
 
 ## 5. 工作原理
 
@@ -1162,6 +1166,7 @@ IDLE ──INIT──▶ ARMED ──首个采样──▶ RECORDING ──收�
 | `identity.*` | 见上 | `*IDN?` 的四个字段，可满足既有 UTS 的标识校验 |
 | `server.maxSessions` | `8` | 并发 SCPI 会话上限 |
 | `server.scpiPort` | `5025` | 工程中记录的 SCPI 监听端口；`--scpi-port` 优先。不能与 `device.port` 相同 |
+| `server.bindHost` | `"0.0.0.0"` | 两个监听器绑定的网卡地址；`--bind` 优先。填 `"127.0.0.1"` 可把两条链路限制在本机。可填 IP 字面量或主机名——主机名在绑定时才解析，因此解析失败是退出码 `3`，而不是工程加载失败 |
 | `mock.signal.*` | 一个 100 Hz 分量 | 正弦分量、高斯噪声 σ、随机数种子 |
 
 最近一次加载或保存的工程路径会被记录（Windows 上为 `%LOCALAPPDATA%\QuickVib\`，Unix 上为
@@ -1350,7 +1355,7 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 
 | 现象 | 原因与处理 |
 | --- | --- |
-| 启动即退出码 `3` | 端口被占用：可能是另一个 QuickVib 实例，或其他程序占用了 `5025`/`9123`。用 `--scpi-port` / `--device-port` 换端口 |
+| 启动即退出码 `3` | 监听器绑定失败。多数情况是端口被占用：可能是另一个 QuickVib 实例，或其他程序占用了 `5025`/`9123`，此时用 `--scpi-port` / `--device-port` 换端口。若 `--bind` / `server.bindHost` 指定的主机无法解析、或不是本机地址，也会是同一个退出码；错误信息中会给出实际尝试绑定的地址 |
 | 没有出现窗口 | 要么编译时没有加 `--features gui`，要么传了 `--headless`，要么主机没有显示环境——后两种情况都会打印一行说明并继续在控制台提供服务。无论哪种情况，两个服务都在运行 |
 | GUI 中的修改没有生效 | 只有**应用**会把表单推入运行中的引擎。端口、数据来源、采样率与数据类型会被保存，但需要重启，应用会明确提示 |
 | 窗口上显示的端口连不上 | 请看状态栏里的**实际监听端口**，而不是可编辑的**项目端口**字段：`--scpi-port` / `--device-port` 会覆盖工程文件，窗口正是为此把两者分开标注（[§2.1](#实际监听端口与项目端口)） |

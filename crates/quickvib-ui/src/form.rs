@@ -383,6 +383,7 @@ pub fn starter_project() -> Project {
         server: Server {
             max_sessions: 8,
             scpi_port: DEFAULT_SCPI_PORT,
+            ..Server::default()
         },
         mock: Mock {
             signal: MockSignal {

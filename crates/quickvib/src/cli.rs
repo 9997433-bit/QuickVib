@@ -1,6 +1,6 @@
 //! Hand-rolled argument parsing (`docs/PLAN.md` 13, D18).
 //!
-//! Nine flags, no subcommands, no completion — and the UTS invokes the executable from a
+//! Ten flags, no subcommands, no completion — and the UTS invokes the executable from a
 //! plain `cmd` line where quoting quirks matter more than parser features. Parsing is a pure
 //! function of `&[OsString]`, so every case is testable without spawning a process.
 
@@ -9,6 +9,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use quickvib_core::{BackendKind, Level};
+use quickvib_project::{parse_bind_host, DEFAULT_BIND_HOST};
 
 /// Default port the SCPI server listens on: the conventional SCPI raw-socket port.
 pub const DEFAULT_SCPI_PORT: u16 = 5025;
@@ -25,6 +26,9 @@ pub struct Options {
     pub scpi_port: Option<u16>,
     /// Port the device server listens on. `None` defers to the project's `device.port`.
     pub device_port: Option<u16>,
+    /// Host both listeners bind. `None` defers to the project's `server.bindHost`, whose own
+    /// default is every interface.
+    pub bind_host: Option<String>,
     /// No interactive console output; structured log lines only.
     pub headless: bool,
     /// Backend override. `None` defers to the project, which defaults to the mock.
@@ -41,6 +45,7 @@ impl Default for Options {
             project: None,
             scpi_port: None,
             device_port: None,
+            bind_host: None,
             headless: false,
             backend: None,
             no_auto_load: false,
@@ -112,6 +117,9 @@ OPTIONS:
     --project <path>            Load this project at startup (default: auto-load the last one)
     --scpi-port <n>             Port the UTS connects to        [default: {DEFAULT_SCPI_PORT}]
     --device-port <n>           Port the M300 dials in on       [default: {DEFAULT_DEVICE_PORT}]
+    --bind <host>               Host both listeners bind        [default: {DEFAULT_BIND_HOST}]
+                                An IP literal or a host name; {DEFAULT_BIND_HOST} is every
+                                interface, 127.0.0.1 keeps both links on this machine
     --headless                  Structured log lines only, no interactive output
     --backend <mock|tcp|m300>   Override the project's backend  [default: mock]
                                 mock = in-process signal generator
@@ -191,6 +199,16 @@ pub fn parse(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
             "--device-port" => {
                 let value = take_value("--device-port", inline, arguments, &mut index)?;
                 options.device_port = Some(parse_port("--device-port", &value)?);
+            }
+            "--bind" => {
+                let value = take_value("--bind", inline, arguments, &mut index)?;
+                let text = value.to_string_lossy();
+                options.bind_host =
+                    Some(parse_bind_host(&text).map_err(|reason| CliError::BadValue {
+                        flag: "--bind",
+                        value: text.clone().into_owned(),
+                        reason: reason.to_string(),
+                    })?);
             }
             "--backend" => {
                 let value = take_value("--backend", inline, arguments, &mut index)?;
@@ -315,6 +333,7 @@ mod tests {
         assert_eq!(o.project, None);
         assert_eq!(o.scpi_port, None);
         assert_eq!(o.device_port, None);
+        assert_eq!(o.bind_host, None);
         assert!(!o.headless);
         assert_eq!(o.backend, None);
         assert!(!o.no_auto_load);
@@ -364,6 +383,35 @@ mod tests {
             options(&["--backend", "tcp"]).backend,
             Some(BackendKind::Tcp)
         );
+    }
+
+    #[test]
+    fn bind_accepts_addresses_and_names_and_canonicalises_them() {
+        assert_eq!(
+            options(&["--bind", "127.0.0.1"]).bind_host.as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            options(&["--bind=localhost"]).bind_host.as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(
+            options(&["--bind", "[::1]"]).bind_host.as_deref(),
+            Some("::1")
+        );
+    }
+
+    #[test]
+    fn a_bind_host_that_could_never_be_bound_is_rejected() {
+        for value in ["127.0.0.1:5025", "two words", "[127.0.0.1]"] {
+            assert!(
+                matches!(
+                    parse(&args(&["--bind", value])),
+                    Err(CliError::BadValue { .. })
+                ),
+                "for {value}"
+            );
+        }
     }
 
     #[test]
@@ -422,6 +470,7 @@ mod tests {
             "--project",
             "--scpi-port",
             "--device-port",
+            "--bind",
             "--backend",
             "--log-level",
         ] {
@@ -491,6 +540,7 @@ mod tests {
             "--project",
             "--scpi-port",
             "--device-port",
+            "--bind",
             "--headless",
             "--backend",
             "--no-auto-load",

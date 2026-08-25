@@ -990,6 +990,7 @@ mismatch is rejected with `-224`. Property names are camelCase, mapped with
 | `identity.firmwareVersion` | string | no | `CARGO_PKG_VERSION` | `*IDN?` field 4 |
 | `server.maxSessions` | int | no | `8` | *(proposed)* Concurrent SCPI session cap (§5.4) |
 | `server.scpiPort` | int | no | `5025` | Port the SCPI server listens on. Resolved at startup by `app::resolve_scpi_port` the way `device.port` is: `--scpi-port` wins, then this field, then the default. The GUI edits it |
+| `server.bindHost` | string | no | `"0.0.0.0"` | Address both TCP listeners bind. IPv4/IPv6 literals or an RFC 1123 hostname; no DNS at load time. `--bind` overrides |
 | `mock.signal.components[]` | object[] | no | one 100 Hz component | `{ frequencyHz, amplitude, phaseDeg }` |
 | `mock.signal.noiseStdDev` | number | no | `0` | Gaussian noise σ |
 | `mock.signal.seed` | int | no | `12345` | Determinism for tests (vendored PRNG, §7.4) |
@@ -1014,6 +1015,7 @@ and each one is directly editable in the GUI (§19, Phase 8).
 | `--project <path>` | file path | *(auto-load-last)* | Load this project at startup. Failure to load is fatal (exit `4`). |
 | `--scpi-port <n>` | 1–65535 | `5025` | Port the SCPI server listens on for the UTS. |
 | `--device-port <n>` | 1–65535 | `9123` | Port the device server listens on for the M300's inbound connection. Overrides `device.port`. |
+| `--bind <host>` | IPv4/IPv6/hostname | `0.0.0.0` | Address both listeners bind. Overrides `server.bindHost`. Invalid host exits `2`; bind failure exits `3`. |
 | `--headless` | flag | off | No interactive console UI; structured log lines only (§16). Intended for UTS-launched runs. |
 | `--backend <mock\|tcp\|m300>` | enum | *(project, else `mock`)* | *(proposed)* Override the project's backend selection. `tcp` records the inbound LE `f32` stream on `--device-port` (§7.4). `m300` on a non-Windows host, or in a build without the `m300` feature, is a startup error (exit `2`). |
 | `--no-auto-load` | flag | off | *(proposed)* Suppress auto-load-last, for a clean UTS run. |

@@ -11,7 +11,9 @@ use std::sync::Arc;
 use quickvib_core::{BackendKind, CancelToken, Clock, Level, Logger, SystemClock};
 use quickvib_device::{ConnectionState, DeviceBackend};
 use quickvib_engine::{Engine, EngineConfig};
-use quickvib_project::{LastProjectStore, Project, ProjectStore};
+use quickvib_project::{
+    join_host_port, LastProjectStore, Project, ProjectStore, DEFAULT_BIND_HOST,
+};
 
 use crate::backend_factory::{self, BackendError};
 use crate::cli::{Options, DEFAULT_DEVICE_PORT, DEFAULT_SCPI_PORT};
@@ -100,7 +102,7 @@ impl std::error::Error for StartupError {
 /// session cap.
 pub struct AppBuilder {
     options: Options,
-    bind_host: String,
+    bind_host: Option<String>,
     clock: Option<Arc<dyn Clock>>,
     logger: Option<Arc<dyn Logger>>,
     backend: Option<Box<dyn DeviceBackend + Send>>,
@@ -125,7 +127,7 @@ impl AppBuilder {
     pub fn new(options: Options) -> Self {
         Self {
             options,
-            bind_host: "0.0.0.0".to_owned(),
+            bind_host: None,
             clock: None,
             logger: None,
             backend: None,
@@ -136,10 +138,13 @@ impl AppBuilder {
         }
     }
 
-    /// Bind the listeners on this host instead of every interface.
+    /// Bind the listeners on this host, ahead of both `--bind` and the project.
+    ///
+    /// The integration suite is the caller that needs it: every test binds the loopback
+    /// interface whatever the project under test says.
     #[must_use]
     pub fn bind_host(mut self, host: impl Into<String>) -> Self {
-        self.bind_host = host.into();
+        self.bind_host = Some(host.into());
         self
     }
 
@@ -248,8 +253,13 @@ impl AppBuilder {
             .or(project.as_ref().map(|p| p.server.max_sessions))
             .unwrap_or(crate::scpi_server::DEFAULT_MAX_SESSIONS);
 
+        let bind_host = match self.bind_host {
+            Some(host) => host,
+            None => resolve_bind_host(&self.options, project.as_ref()),
+        };
+
         let scpi_port = resolve_scpi_port(&self.options, project.as_ref());
-        let scpi_addr = format!("{}:{scpi_port}", self.bind_host);
+        let scpi_addr = join_host_port(&bind_host, scpi_port);
         let scpi = ScpiServer::bind(&scpi_addr, Arc::clone(&engine), Arc::clone(&logger))
             .map_err(|source| StartupError::Bind {
                 what: "SCPI",
@@ -259,7 +269,7 @@ impl AppBuilder {
             .with_max_sessions(max_sessions)
             .with_fault_injection(self.fault_injection);
 
-        let device_addr = format!("{}:{device_port}", self.bind_host);
+        let device_addr = join_host_port(&bind_host, device_port);
         let allowed_peers = project
             .as_ref()
             .map(|p| p.device.allowed_peers.clone())
@@ -295,6 +305,16 @@ pub fn resolve_scpi_port(options: &Options, project: Option<&Project>) -> u16 {
         .scpi_port
         .or_else(|| project.map(|p| p.server.scpi_port))
         .unwrap_or(DEFAULT_SCPI_PORT)
+}
+
+/// Resolve the listen host: `--bind` wins, then the project, then every interface.
+#[must_use]
+pub fn resolve_bind_host(options: &Options, project: Option<&Project>) -> String {
+    options
+        .bind_host
+        .clone()
+        .or_else(|| project.map(|p| p.server.bind_host.clone()))
+        .unwrap_or_else(|| DEFAULT_BIND_HOST.to_owned())
 }
 
 /// Resolve the inbound device port: `--device-port` wins, then the project, then the default.
@@ -734,6 +754,46 @@ mod tests {
         match app {
             Ok(app) => assert_eq!(app.scpi_addr().unwrap().port(), 1),
             Err(error) => assert_eq!(error.exit_code(), EXIT_BIND_FAILURE),
+        }
+    }
+
+    #[test]
+    fn the_bind_host_falls_back_from_the_cli_to_the_project_to_every_interface() {
+        let mut project = Project::from_json_str(PROJECT).unwrap();
+        project.server.bind_host = "127.0.0.1".to_owned();
+
+        let silent = Options::default();
+        assert_eq!(resolve_bind_host(&silent, Some(&project)), "127.0.0.1");
+        assert_eq!(resolve_bind_host(&silent, None), DEFAULT_BIND_HOST);
+
+        let overridden = Options {
+            bind_host: Some("::1".to_owned()),
+            ..Options::default()
+        };
+        assert_eq!(resolve_bind_host(&overridden, Some(&project)), "::1");
+    }
+
+    #[test]
+    fn an_ipv6_bind_host_reaches_both_listeners() {
+        let built = AppBuilder::new(options())
+            .bind_host("::1")
+            .clock(Arc::new(TestClock::at_epoch()))
+            .logger(Arc::new(NullLogger))
+            .last_project(None)
+            .build();
+
+        // A host with IPv6 switched off cannot bind the loopback address at all, so the
+        // assertion that holds either way is that the literal reached the OS bracketed —
+        // `[::1]:0` — rather than as the nonsense `::1:0`.
+        match built {
+            Ok(app) => {
+                assert!(app.scpi_addr().unwrap().is_ipv6());
+                assert!(app.device_addr().unwrap().is_ipv6());
+            }
+            Err(StartupError::Bind { addr, .. }) => {
+                assert!(addr.starts_with("[::1]:"), "{addr}");
+            }
+            Err(other) => panic!("unexpected startup failure: {other}"),
         }
     }
 

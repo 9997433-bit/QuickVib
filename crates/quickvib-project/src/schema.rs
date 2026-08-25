@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use quickvib_core::{BackendKind, ExportFormat, SampleUnit, ScpiError};
 
+use crate::bind_host::DEFAULT_BIND_HOST;
 use crate::error::ProjectError;
 use crate::serde_enums::{de_backend, de_format, de_unit, ser_backend, ser_format, ser_unit};
 
@@ -205,6 +206,10 @@ pub struct Server {
     /// Port the SCPI server listens on for the UTS. `--scpi-port` overrides it.
     #[serde(default = "default_scpi_port")]
     pub scpi_port: u16,
+    /// Host both listeners bind. `--bind` overrides it. The default accepts connections on
+    /// every interface; `127.0.0.1` keeps both links on this machine.
+    #[serde(default = "default_bind_host")]
+    pub bind_host: String,
 }
 
 /// Mock backend configuration.
@@ -292,6 +297,9 @@ fn default_max_sessions() -> usize {
 fn default_scpi_port() -> u16 {
     DEFAULT_SCPI_PORT
 }
+fn default_bind_host() -> String {
+    DEFAULT_BIND_HOST.to_owned()
+}
 fn default_seed() -> u64 {
     12345
 }
@@ -338,6 +346,7 @@ impl Default for Server {
         Self {
             max_sessions: default_max_sessions(),
             scpi_port: default_scpi_port(),
+            bind_host: default_bind_host(),
         }
     }
 }
@@ -454,6 +463,7 @@ mod tests {
         assert_eq!(p.device.acceleration_range, DEFAULT_ACCELERATION_RANGE);
         assert_eq!(p.server.max_sessions, 8);
         assert_eq!(p.server.scpi_port, DEFAULT_SCPI_PORT);
+        assert_eq!(p.server.bind_host, DEFAULT_BIND_HOST);
         assert_eq!(p.mock.signal.components.len(), 1);
         assert_eq!(p.mock.signal.seed, 12345);
     }
@@ -531,7 +541,7 @@ mod tests {
                 "velocityRange": 2500.0, "displacementRange": 800.0, "accelerationRange": 50.0
             },
             "recording": { "durationSeconds": 1.0 },
-            "server": { "scpiPort": 5125 }
+            "server": { "scpiPort": 5125, "bindHost": "127.0.0.1" }
         }"#;
         let p = Project::from_json_str(json).unwrap();
         assert_eq!(p.device.lpf_hz, Some(22_000.0));
@@ -540,6 +550,7 @@ mod tests {
         assert_eq!(p.device.displacement_range, 800.0);
         assert_eq!(p.device.acceleration_range, 50.0);
         assert_eq!(p.server.scpi_port, 5125);
+        assert_eq!(p.server.bind_host, "127.0.0.1");
 
         let q = Project::from_json_str(&p.to_json_string().unwrap()).unwrap();
         assert_eq!(p, q);

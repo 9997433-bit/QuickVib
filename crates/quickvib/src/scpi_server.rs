@@ -23,6 +23,17 @@ pub const DEFAULT_MAX_SESSIONS: usize = 8;
 /// How often the accept loop wakes to check for cancellation.
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
+/// How long one write to a session socket may make no progress before the peer is given up
+/// on.
+///
+/// Without it a peer that stops reading — a UTS that crashed with its socket still open, or
+/// one paused in a debugger — parks the thread broadcasting `#REC:DONE` forever, and the
+/// sessions after it in the broadcast never hear that the run finished. The clock only runs
+/// while *nothing at all* moves: a slow but live consumer of a multi-megabyte `FETC?`
+/// response keeps resetting it, so five seconds is generous for the case this guards while
+/// still bounding the damage at five seconds per stalled session.
+const SESSION_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The undocumented line that makes a session thread panic, so the containment rule in D27
 /// can be tested end to end. Recognised only when fault injection is switched on, which the
 /// shipped binary never does.
@@ -185,26 +196,61 @@ struct Session {
 }
 
 impl Session {
+    /// Take ownership of the write half, bounding how long a write may stall.
+    ///
+    /// `write_timeout` is [`None`] only where a test wants the old unbounded behaviour;
+    /// every session the server builds gets [`SESSION_WRITE_TIMEOUT`].
+    fn new(writer: TcpStream, write_timeout: Option<Duration>) -> Self {
+        // A failure here leaves the socket blocking, which is what it was before the timeout
+        // existed — worth carrying on with, not worth refusing the session over.
+        let _ = writer.set_write_timeout(write_timeout);
+        Self {
+            writer: Mutex::new(writer),
+        }
+    }
+
     fn write_responses(&self, responses: &[Response]) -> std::io::Result<()> {
         let guard = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
         // A `FETC?` of a 500 000-sample capture is several megabytes of ASCII; buffering
         // turns that into a handful of syscalls instead of one per sample.
         let mut buffered = BufWriter::with_capacity(64 * 1024, &*guard);
-        write_response_line(&mut buffered, responses)?;
-        buffered.flush()
+        let outcome = write_response_line(&mut buffered, responses).and_then(|()| buffered.flush());
+        drop(buffered);
+        Self::abandon_on_error(&guard, outcome)
     }
 
     fn write_line(&self, line: &str) -> std::io::Result<()> {
         let mut guard = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
-        guard.write_all(line.as_bytes())?;
-        guard.write_all(b"\n")?;
-        guard.flush()
+        // One write rather than three: a line that leaves in a single syscall cannot be cut
+        // in half by the write timeout.
+        let mut framed = String::with_capacity(line.len() + 1);
+        framed.push_str(line);
+        framed.push('\n');
+        let outcome = guard
+            .write_all(framed.as_bytes())
+            .and_then(|()| guard.flush());
+        Self::abandon_on_error(&guard, outcome)
+    }
+
+    /// Close the socket when a write fails, then report the failure unchanged.
+    ///
+    /// A write that gives up part-way has left a truncated line in the peer's stream, and the
+    /// only honest thing to do with a stream in that state is to end it. Closing also wakes
+    /// this session's reader thread, so the timeout tidies the session up rather than leaving
+    /// a half-dead one registered for the next broadcast.
+    fn abandon_on_error(socket: &TcpStream, outcome: std::io::Result<()>) -> std::io::Result<()> {
+        if outcome.is_err() {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
+        outcome
     }
 }
 
 impl NotificationSink for Session {
     fn notify(&self, line: &str) {
-        // A session whose peer has vanished must not disturb the others.
+        // A session whose peer has vanished — or has stopped reading — must not disturb the
+        // others: the write is bounded by the socket's write timeout, and a failure closes
+        // this session instead of holding up the sessions behind it in the broadcast.
         let _ = self.write_line(line);
     }
 }
@@ -223,9 +269,7 @@ fn serve_session(
         return;
     };
 
-    let session = Arc::new(Session {
-        writer: Mutex::new(write_half),
-    });
+    let session = Arc::new(Session::new(write_half, Some(SESSION_WRITE_TIMEOUT)));
     let id = engine.register_session(Arc::clone(&session) as Arc<dyn NotificationSink>);
     if logger.enabled(Level::Info) {
         logger.log(Level::Info, "scpi", &format!("session opened peer={peer}"));
@@ -373,11 +417,62 @@ fn is_panic_probe(line: &[u8]) -> bool {
 }
 
 #[cfg(test)]
+#[path = "scpi_server_timeout_tests.rs"]
+mod write_timeout_tests;
+
+#[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    // Real elapsed time, not the injected clock: what is under test is a socket option the
+    // operating system enforces against the wall clock (D20 covers instrument timing).
+    #![allow(clippy::disallowed_methods, clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
     use std::io::Cursor;
+    use std::time::Instant;
+
+    /// A connected pair on the loopback interface. The client end is returned so the caller
+    /// can keep it open — and, in these tests, deliberately never read from it.
+    fn connected_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (server, client)
+    }
+
+    #[test]
+    fn a_session_socket_carries_a_bounded_write_timeout() {
+        let (server, _client) = connected_pair();
+        let session = Session::new(server, Some(SESSION_WRITE_TIMEOUT));
+        let guard = session.writer.lock().unwrap();
+        assert_eq!(guard.write_timeout().unwrap(), Some(SESSION_WRITE_TIMEOUT));
+    }
+
+    #[test]
+    fn the_shipped_write_timeout_is_modest() {
+        assert!(SESSION_WRITE_TIMEOUT >= Duration::from_secs(1));
+        assert!(SESSION_WRITE_TIMEOUT <= Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_notification_to_a_peer_that_never_reads_gives_up_and_closes_the_session() {
+        let (server, _client) = connected_pair();
+        let session = Session::new(server, Some(Duration::from_millis(50)));
+
+        // The peer never reads, so both socket buffers fill and the write stops making
+        // progress. Without the timeout this loop would never end.
+        let line = "X".repeat(256 * 1024);
+        let start = Instant::now();
+        while session.write_line(&line).is_ok() {
+            assert!(
+                start.elapsed() < Duration::from_secs(60),
+                "the write was never bounded"
+            );
+        }
+
+        // Giving up closes the socket: a peer that has already been sent half a line must not
+        // be sent the next one on top of it.
+        assert!(session.write_line("#REC:DONE").is_err());
+    }
 
     #[test]
     fn a_terminated_line_is_returned_whole() {

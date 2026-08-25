@@ -151,6 +151,7 @@ impl HarnessBuilder {
             project: self.project_loaded.then(|| project_path.clone()),
             scpi_port: Some(0),
             device_port: Some(0),
+            bind_host: None,
             headless: true,
             backend: self.backend_kind,
             no_auto_load: !self.auto_load,

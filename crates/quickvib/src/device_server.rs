@@ -144,6 +144,7 @@ impl DeviceServer {
             let reason = match why {
                 Refusal::PeerNotAllowed => "peerNotAllowed",
                 Refusal::AlreadyConnected => "alreadyConnected",
+                Refusal::SocketError => "socketError",
             };
             self.log(Level::Warn, format!("refused peer={peer} reason={reason}"));
         });
