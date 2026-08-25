@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  lint:
+    name: fmt + clippy (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-lint-${{ hashFiles('**/Cargo.lock') }}
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: cargo test (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
+      - run: cargo test --workspace --all-targets --locked
+      - run: cargo test --workspace --doc --locked
+
+  deps:
+    name: dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert the direct runtime dependency set matches PLAN 6.3
+        run: ./ci/check-deps.sh
+
+  cross-win-gnu:
+    name: cross build x86_64-pc-windows-gnu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - run: rustup target add x86_64-pc-windows-gnu
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-crosswin-${{ hashFiles('**/Cargo.lock') }}
+      - run: cargo build --release --target x86_64-pc-windows-gnu --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quickvib-x86_64-pc-windows-gnu
+          path: target/x86_64-pc-windows-gnu/release/quickvib.exe

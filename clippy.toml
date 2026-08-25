@@ -1,0 +1,7 @@
+# PLAN D20: wall-clock and monotonic time are injected through `quickvib_core::clock::Clock`
+# so a "5 second" capture runs in milliseconds under test. The only legal call sites are
+# inside `quickvib-core::clock`, which opt out with an explicit `#[allow]`.
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "use quickvib_core::clock::Clock (PLAN D20)" },
+    { path = "std::time::SystemTime::now", reason = "use quickvib_core::clock::Clock (PLAN D20)" },
+]

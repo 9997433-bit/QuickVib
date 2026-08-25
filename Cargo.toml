@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/quickvib",
+    "crates/quickvib-core",
+    "crates/quickvib-project",
+    "crates/quickvib-measure",
+    "crates/quickvib-device",
+    "crates/quickvib-scpi",
+    "crates/quickvib-engine",
+    "crates/quickvib-testkit",
+    "crates/quickvib-m300",
+]
+
+# `quickvib-m300` is the only crate that may contain `unsafe` and the only one bound to
+# Windows (PLAN D2/D22). Excluding it here means a plain `cargo build`/`cargo test`/
+# `cargo clippy` at the workspace root on Linux never compiles it.
+default-members = [
+    "crates/quickvib",
+    "crates/quickvib-core",
+    "crates/quickvib-project",
+    "crates/quickvib-measure",
+    "crates/quickvib-device",
+    "crates/quickvib-scpi",
+    "crates/quickvib-engine",
+    "crates/quickvib-testkit",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.83"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/quickvib/quickvib"
+authors = ["QuickVib contributors"]
+
+[workspace.dependencies]
+quickvib-core = { path = "crates/quickvib-core", version = "1.0.0" }
+quickvib-project = { path = "crates/quickvib-project", version = "1.0.0" }
+quickvib-measure = { path = "crates/quickvib-measure", version = "1.0.0" }
+quickvib-device = { path = "crates/quickvib-device", version = "1.0.0" }
+quickvib-scpi = { path = "crates/quickvib-scpi", version = "1.0.0" }
+quickvib-engine = { path = "crates/quickvib-engine", version = "1.0.0" }
+quickvib-testkit = { path = "crates/quickvib-testkit", version = "1.0.0" }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+libloading = "0.8"
+tempfile = "3"
+
+[workspace.lints.rust]
+missing_docs = "deny"
+rust_2018_idioms = "deny"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+dbg_macro = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
