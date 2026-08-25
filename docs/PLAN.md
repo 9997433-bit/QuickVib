@@ -247,6 +247,7 @@ stateDiagram-v2
     [*] --> Idle
     Idle --> Armed: INIT / REC:STAR
     Armed --> Recording: first sample from backend
+    Armed --> Complete: whole capture in one batch
     Recording --> Complete: expected sample count reached
     Recording --> Aborted: ABOR / link lost / watchdog
     Armed --> Aborted: ABOR / connect timeout
@@ -254,6 +255,9 @@ stateDiagram-v2
     Aborted --> Armed: INIT (new run)
     Complete --> Idle: *RST
     Aborted --> Idle: *RST
+    Armed --> Idle: *RST
+    Recording --> Idle: *RST
+    Idle --> Idle: *RST
     Complete --> Idle: project adopted (Invalidate)
     Aborted --> Idle: project adopted (Invalidate)
     Idle --> Idle: project adopted (Invalidate)
@@ -281,7 +285,7 @@ No async runtime (D19). Six kinds of thread, all `std::thread`:
 | Thread | Owns | Rules |
 | --- | --- | --- |
 | SCPI accept loop | `TcpListener` on `--scpi-port` | One spawned thread per accepted client, capped at `max_sessions` (default 8); beyond the cap the connection is accepted, refused with a log line, and closed |
-| SCPI session thread (one per client) | `BufReader<TcpStream>` read half, session-local `*OPC?` flag | All writes to that socket go through a per-session `Mutex<TcpStream>` write half, so a notification can never interleave mid-response |
+| SCPI session thread (one per client) | `BufReader<TcpStream>` read half | All writes to that socket go through a per-session `Mutex<TcpStream>` write half, so a notification can never interleave mid-response. A 5 s write timeout disconnects a stalled peer so it cannot block `#REC:DONE` broadcast. `*OPC` bookkeeping is engine-global, not per-session |
 | Instrument engine | State machine, loaded project, capture buffer, measurements, error queue | One `Mutex<EngineState>`; handlers are short and never do I/O while holding the guard. Blocking queries wait on a `Condvar` paired with that same mutex |
 | Device accept loop | `TcpListener` on `--device-port` | Accepts the M300's inbound connection; hands the stream to the framer |
 | Backend reader thread | Socket → framing → `SampleBatch` callback | Single producer for the capture buffer; the only writer to sample storage during `Recording` |
@@ -521,13 +525,14 @@ either way. That bounds the reversal cost to one file.
 * Unknown headers push `-113,"Undefined header"` onto the error queue and return nothing (queries
   included — standard behavior; the UTS discovers the fault via `SYST:ERR?`).
 * **Async notification:** when a recording finishes, the engine pushes the literal line `#REC:DONE`
-  to every connected session that has notifications enabled. The `#` prefix marks it out-of-band so a
+  to every connected session. There is no per-session enable switch. The `#` prefix marks it out-of-band so a
   UTS reading a query response can distinguish it (D17). `REC:WAIT?` is the blocking alternative for
   clients that prefer strict request/response. The per-session write mutex guarantees a notification
-  never appears in the middle of a response line.
-* Idle sessions are never timed out by QuickVib; the UTS owns its own socket lifetime. A session
-  thread parked in `read_until` exits when the peer closes or when shutdown calls `shutdown(Both)` on
-  its cloned handle.
+  never appears in the middle of a response line. A peer that stops reading is disconnected after
+  5 s (`SESSION_WRITE_TIMEOUT`) so one stalled client cannot block the broadcast.
+* Idle sessions are never *read*-timed-out by QuickVib; the UTS owns its own socket lifetime. A session
+  thread parked in `read_until` exits when the peer closes, when shutdown calls `shutdown(Both)` on
+  its cloned handle, or when a write (including a notification) hits the 5 s write timeout.
 
 ### 7.3 Device link
 
@@ -715,7 +720,7 @@ named in the brief; see Q8 in §21.
 | `*RST` | Command | — | Abort any recording, discard capture data, reset duration and format to the loaded project's values, keep the loaded project, clear the error queue. Returns to `Idle`. |
 | `*CLS` | Command | — | Clear the error queue and the pending `*OPC` request together with the OPC bit. Does not touch data or state. The status byte and standard event register are **not implemented** — there is no `*STB?`/`*ESR?`, so "clearing the registers" reduces to those two items (§21.2 item 16). |
 | `*OPC` | Command | — | Arms the OPC bit for when all pending overlapped operations (i.e. an active recording) complete. The bit is engine-internal bookkeeping: without `*ESR?` a UTS observes completion through `*OPC?`, `REC:WAIT?` or `#REC:DONE`. |
-| `*OPC?` | Query | `1` | Blocks until pending operations complete, then returns `1`. Bounded by the run watchdog, so it cannot hang past `duration × multiplier + 1 s`. |
+| `*OPC?` | Query | `1` | Blocks until pending operations complete, then returns `1`. Bounded by the run watchdog plus one extra second on the condvar wait, so it cannot hang past `duration × multiplier + 2 s`. |
 | `SYST:ERR?` | Query | `<code>,"<message>"` | Pops the oldest entry from the FIFO error queue (`VecDeque`, bounded). Returns `0,"No error"` when empty. Queue depth 32; overflow replaces the last entry with `-350,"Queue overflow"`. |
 
 ### 8.2 Project / mass-memory
@@ -862,6 +867,13 @@ trait DeviceBackend: Send {
 
     /// Stop an in-flight stream promptly from another thread; safe to call when idle.
     fn stop(&self) -> Result<(), DeviceError>;
+
+    /// Handle that `ABOR` / the watchdog can fire without holding `&mut self`.
+    /// See the live `DeviceBackend::stop_handle` rustdoc for the idempotency contract.
+    fn stop_handle(&self) -> Option<Arc<dyn Fn() + Send + Sync>>;
+
+    /// Reportable teardown for paths that want an error; `Drop` still closes the rest.
+    fn close(&mut self) -> Result<(), DeviceError>;
 }
 
 /// Connection transitions are published through this, replacing the C# `event`.
@@ -888,8 +900,10 @@ Design notes, and how the shape changed from the .NET sketch:
   because `Drop` cannot return errors, an explicit `close()` is available for the paths that want to
   report failure.
 * **`Send` but not `Sync`** on the trait: exactly one thread streams; sharing is the engine's job.
-* **Six methods total.** If the trait grows past this, the extra concern probably belongs in
-  `quickvib-engine` instead.
+* **Seven methods total** (`is_connected`, `open`, `capabilities`, `stream`, `stop`,
+  `stop_handle`, `close`). If the trait grows past this, the extra concern probably belongs in
+  `quickvib-engine` instead. `stop_handle` is how `ABOR` and the watchdog unblock a `stream` that
+  holds `&mut self`; the default returns `None` for backends that already poll `CancelToken`.
 
 ---
 
@@ -1000,7 +1014,8 @@ Validation rules enforced on load: `sampleRateHz > 0`; `durationSeconds ∈ (0, 
 enumerations; `ceil(duration × rate) × 4 ≤ maxCaptureBytes`, computed with `checked_mul`;
 `lpfHz > 0` when present; `highPassHz ≥ 0` and, when non-zero, strictly below the effective
 low-pass cutoff; the three range fields finite and `> 0`; `scpiPort ≠ 0`; `scpiPort ≠ device.port`,
-since both listeners are bound at startup and a file naming one port twice can never be started.
+since both listeners are bound at startup and a file naming one port twice can never be started;
+`bindHost` is an IPv4/IPv6 literal or RFC 1123 hostname (`parse_bind_host`, no DNS at load time).
 
 The `device.lpfHz`, `device.highPassHz`, and the three range fields are the **M300 setup block**:
 every one is optional with a default, so a file written before they existed still loads unchanged,

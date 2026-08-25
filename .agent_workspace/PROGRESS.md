@@ -30,7 +30,7 @@ Round 1 的 fable-A 以 **云端子代理**（`environment=cloud`）派出，模
 | --- | --- | --- |
 | 1 初始构建与基线探索 | completed | `.agent_workspace/ROUND1_BRIEF.md` |
 | 2 靶向重构与深度优化 | completed | `.agent_workspace/ROUND2_BRIEF.md` |
-| 3 SOTA 打磨与最终验收 | in_progress | |
+| 3 SOTA 打磨与最终验收 | completed | `.agent_workspace/ROUND3_BRIEF.md` |
 
 ## Round 1 派发清单
 

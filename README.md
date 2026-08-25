@@ -166,9 +166,9 @@ rules `MMEM:LOAD:STAT` applies:
 | 数据导出 · Export | CSV or TXT, directory, CSV preamble, DC removal |
 
 Everything the window does not show — the watchdog multiplier, the capture-size cap, the `*IDN?`
-identity block, the session cap, the allowed-peer list, the mock signal definition — is carried
-through load, edit and save untouched, so opening a project in the window and saving it back never
-silently drops a field.
+identity block, the session cap, `server.bindHost`, the allowed-peer list, the mock signal
+definition — is carried through load, edit and save untouched, so opening a project in the window
+and saving it back never silently drops a field.
 
 **应用 / Apply** is the button that matters. It parses and validates every field, and on success
 hands the edited project to the *running* engine — the very same `Arc<Engine>` the SCPI sessions
@@ -294,8 +294,10 @@ Instrument states, reported by `REC:STAT?`:
 
 ```
 IDLE ──INIT──▶ ARMED ──first sample──▶ RECORDING ──expected count──▶ COMPLETE
-                 │                          │                             │
-                 └──── ABOR / timeout ──────┴────────▶ ABORTED ◀──────────┘
+                 │                          │
+                 │                          └── (one-batch run may skip RECORDING)
+                 └──── ABOR / timeout ──────┴────────▶ ABORTED
+*RST from any state returns to IDLE. ABOR is a no-op once COMPLETE.
 ```
 
 ## 6. SCPI command reference
@@ -310,7 +312,7 @@ forms both accepted. Semicolon-chained compound messages (`*CLS;*IDN?`) work. Re
 | --- | --- | --- |
 | `*IDN?` | `QuickVib,M300-SCPI,<serial>,<fw>` | Manufacturer, model, serial, firmware. All four configurable from the project's `identity` block |
 | `*RST` | — | Abort any run, discard data, reset to the project's values, clear the error queue |
-| `*CLS` | — | Clear the error queue and status registers |
+| `*CLS` | — | Clear the error queue and any pending `*OPC` request (status registers are not implemented) |
 | `*OPC` / `*OPC?` | — / `1` | Operation-complete bit; the query blocks until the pending run finishes |
 | `SYST:ERR?` | `<code>,"<message>"` | Pop the oldest error. `0,"No error"` when empty |
 
@@ -343,9 +345,11 @@ forms both accepted. Semicolon-chained compound messages (`*CLS;*IDN?`) work. Re
 | `SYST:VERS?` | `1999.0` | SCPI standard version |
 
 **Out-of-band notifications.** Lines beginning with `#` are unsolicited, never responses:
-`#REC:DONE` when a run completes, `#REC:ABORT` when one aborts or times out. A per-session write
-lock guarantees a notification can never appear in the middle of a response line. Clients that
-prefer strict request/response can ignore them and use `REC:WAIT?` instead.
+`#REC:DONE` when a run completes, `#REC:ABORT` when one aborts or times out. They are pushed to
+every open session. A per-session write lock guarantees a notification can never appear in the
+middle of a response line; a peer that stops reading is disconnected after 5 s so it cannot stall
+the broadcast. Clients that prefer strict request/response can ignore them and use `REC:WAIT?`
+instead.
 
 **Error codes** are standard SCPI-99 — none are invented:
 
@@ -405,8 +409,9 @@ A complete measurement, as the UTS would drive it. `>` is sent to QuickVib, `<` 
 Notes for the UTS author:
 
 * `INIT` is a command, not a query — it produces no response. Waiting for one will hang.
-* Poll `REC:STAT?` or block on `REC:WAIT?`; both are bounded server-side by the watchdog, so neither
-  can hang past `duration × timeoutMultiplier + 1 s`.
+* Poll `REC:STAT?` or block on `REC:WAIT?`; both are bounded server-side by the watchdog
+  (`duration × timeoutMultiplier + 1 s`) plus one extra second on the condvar wait, so neither can
+  hang past `duration × timeoutMultiplier + 2 s`.
 * An unknown command pushes `-113` onto the error queue and returns **nothing**, which is standard
   instrument behavior. Read `SYST:ERR?` to discover it.
 * `FETC?` on a 5 s × 100 kS/s capture is roughly a 6 MB single line. Call `TRAC:POIN?` first and
@@ -449,7 +454,7 @@ lives at `samples/Test.proj`.
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `device.backend` | `"mock"` | `"mock"` or `"m300"` |
+| `device.backend` | `"mock"` | `"mock"`, `"tcp"`, or `"m300"` |
 | `device.port` | `9123` | Inbound port the M300 dials; `--device-port` overrides |
 | `device.sampleRateHz` | *(required)* | e.g. `100000` |
 | `device.unit` | *(required)* | `"velocity_um_s"`, `"displacement_um"`, `"acceleration_m_s2"` |
@@ -884,8 +889,9 @@ schema 中的原始枚举值不会出现在界面上：`velocity_um_s` 显示为
 | 通信端口 | 上半部分是只读的实际监听端口，下半部分是项目端口——见下文 |
 | 数据导出 | CSV 或 TXT、目录、CSV 注释头、是否去直流 |
 
-窗口没有显示的字段——看门狗倍数、采集缓冲上限、`*IDN?` 标识块、会话上限、允许的对端地址、mock 信号定
-义——在加载、编辑、保存的整个过程中原样保留，因此用窗口打开一个工程再存回去，不会悄悄丢掉任何字段。
+窗口没有显示的字段——看门狗倍数、采集缓冲上限、`*IDN?` 标识块、会话上限、`server.bindHost`、允许的对
+端地址、mock 信号定义——在加载、编辑、保存的整个过程中原样保留，因此用窗口打开一个工程再存回去，不
+会悄悄丢掉任何字段。
 
 真正关键的按钮是**应用**。它解析并校验每一个字段，成功后把编辑好的工程交给**正在运行**的引擎——也就
 是各个 SCPI 会话所共享的那一个 `Arc<Engine>`，因此紧接着从 5025 端口发来的 `CONF:REC:DUR?` 返回的就是
@@ -997,8 +1003,10 @@ QuickVib 在两条链路上**都是 TCP 服务端**，从不主动外连。进�
 
 ```
 IDLE ──INIT──▶ ARMED ──首个采样──▶ RECORDING ──收满点数──▶ COMPLETE
-                 │                     │                      │
-                 └──── ABOR / 超时 ─────┴───────▶ ABORTED ◀────┘
+                 │                     │
+                 │                     └── （整批一次到齐时可跳过 RECORDING）
+                 └──── ABOR / 超时 ─────┴───────▶ ABORTED
+任意状态下 `*RST` 回到 IDLE。COMPLETE 之后 `ABOR` 是空操作。
 ```
 
 ## 6. SCPI 命令参考
@@ -1012,7 +1020,7 @@ IDLE ──INIT──▶ ARMED ──首个采样──▶ RECORDING ──收�
 | --- | --- | --- |
 | `*IDN?` | `QuickVib,M300-SCPI,<serial>,<fw>` | 厂商、型号、序列号、固件版本。四个字段均可在工程的 `identity` 中配置 |
 | `*RST` | — | 中止当前采集、丢弃数据、恢复到工程配置值、清空错误队列 |
-| `*CLS` | — | 清空错误队列与状态寄存器 |
+| `*CLS` | — | 清空错误队列与已挂起的 `*OPC` 请求（状态寄存器未实现） |
 | `*OPC` / `*OPC?` | — / `1` | 操作完成位；查询形式会阻塞到当前采集结束 |
 | `SYST:ERR?` | `<code>,"<message>"` | 弹出最早的一条错误；队列为空时返回 `0,"No error"` |
 
@@ -1045,8 +1053,9 @@ IDLE ──INIT──▶ ARMED ──首个采样──▶ RECORDING ──收�
 | `SYST:VERS?` | `1999.0` | SCPI 标准版本 |
 
 **带外通知。** 以 `#` 开头的行都是主动推送，绝不会是某条查询的响应：录制成功完成推送 `#REC:DONE`，
-中止或超时推送 `#REC:ABORT`。每个会话有独立的写锁，保证通知不会插入到某行响应的中间。偏好严格
-「请求—响应」模式的客户端可以忽略这些通知，改用 `REC:WAIT?`。
+中止或超时推送 `#REC:ABORT`。会发给每一个已打开的会话。每个会话有独立的写锁，保证通知不会插入到
+某行响应的中间；对端停止读超过 5 秒会被断开，以免卡住广播。偏好严格「请求—响应」模式的客户端可以
+忽略这些通知，改用 `REC:WAIT?`。
 
 **错误码**全部沿用 SCPI-99 标准，不自造新码：
 
@@ -1106,8 +1115,9 @@ IDLE ──INIT──▶ ARMED ──首个采样──▶ RECORDING ──收�
 给 UTS 开发者的提示：
 
 * `INIT` 是命令而不是查询，**没有响应**；等待响应会一直挂住。
-* 用 `REC:STAT?` 轮询，或用 `REC:WAIT?` 阻塞等待；两者都受服务端看门狗约束，最长不会超过
-  `时长 × timeoutMultiplier + 1 秒`。
+* 用 `REC:STAT?` 轮询，或用 `REC:WAIT?` 阻塞等待；两者都受服务端看门狗约束
+  （`时长 × timeoutMultiplier + 1 秒`），再加上 condvar 等待的 1 秒，硬上界是
+  `时长 × timeoutMultiplier + 2 秒`。
 * 未知命令会把 `-113` 压入错误队列并且**不返回任何内容**——这是标准仪器行为。通过 `SYST:ERR?` 查明。
 * 5 秒 × 100 kS/s 的采集，`FETC?` 的响应约为 6 MB 的一整行。建议先用 `TRAC:POIN?` 确定点数再分配读
   缓冲；若只需要标量结果，直接用 `CALC:MEAS:ALL?`。
@@ -1148,7 +1158,7 @@ IDLE ──INIT──▶ ARMED ──首个采样──▶ RECORDING ──收�
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `device.backend` | `"mock"` | `"mock"` 或 `"m300"` |
+| `device.backend` | `"mock"` | `"mock"`、`"tcp"` 或 `"m300"` |
 | `device.port` | `9123` | M300 连入的端口；`--device-port` 优先 |
 | `device.sampleRateHz` | *(必填)* | 例如 `100000` |
 | `device.unit` | *(必填)* | `"velocity_um_s"`、`"displacement_um"`、`"acceleration_m_s2"` |

@@ -525,7 +525,8 @@ impl Engine {
 
     /// Handle `*OPC?`: block until no overlapped operation is pending, then return.
     ///
-    /// Bounded by the run watchdog, so it cannot hang past `duration * multiplier + 1 s`.
+    /// Bounded by the run watchdog plus one extra second on the condvar wait, so it cannot
+    /// hang past `duration * multiplier + 2 s`.
     pub fn wait_operation_complete(&self) {
         let guard = self.lock();
         let bound = guard.watchdog + Duration::from_secs(1);

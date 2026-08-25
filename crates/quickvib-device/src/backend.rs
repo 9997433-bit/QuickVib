@@ -123,7 +123,7 @@ impl DeviceOpenOptions {
 
 /// A source of vibration samples.
 ///
-/// Six methods, deliberately: buffering, duration enforcement, measurement and export all live
+/// Seven methods, deliberately: buffering, duration enforcement, measurement and export all live
 /// above this line in platform-neutral crates, so they are written and tested once.
 pub trait DeviceBackend: Send {
     /// Whether the transport is live. Backs `SYST:DEV:CONN?`.
