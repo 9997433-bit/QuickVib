@@ -988,7 +988,8 @@ Validation rules enforced on load: `sampleRateHz > 0`; `durationSeconds ∈ (0, 
 `timeoutMultiplier ≥ 1.0`; `responseDecimals ∈ [0, 9]`; `unit`, `backend`, and `format` from their
 enumerations; `ceil(duration × rate) × 4 ≤ maxCaptureBytes`, computed with `checked_mul`;
 `lpfHz > 0` when present; `highPassHz ≥ 0` and, when non-zero, strictly below the effective
-low-pass cutoff; the three range fields finite and `> 0`; `scpiPort ≠ 0`.
+low-pass cutoff; the three range fields finite and `> 0`; `scpiPort ≠ 0`; `scpiPort ≠ device.port`,
+since both listeners are bound at startup and a file naming one port twice can never be started.
 
 The `device.lpfHz`, `device.highPassHz`, and the three range fields are the **M300 setup block**:
 every one is optional with a default, so a file written before they existed still loads unchanged,

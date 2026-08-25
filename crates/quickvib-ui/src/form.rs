@@ -302,7 +302,8 @@ impl ProjectForm {
             "device.accelerationRange",
             &self.acceleration_range,
         );
-        project.device.port = port(&mut errors, "device.port", &self.device_port);
+        let device_port = port(&mut errors, "device.port", &self.device_port);
+        project.device.port = device_port.unwrap_or(1);
 
         project.recording.duration_seconds = positive(
             &mut errors,
@@ -310,7 +311,8 @@ impl ProjectForm {
             &self.duration_seconds,
         );
 
-        project.server.scpi_port = port(&mut errors, "server.scpiPort", &self.scpi_port);
+        let scpi_port = port(&mut errors, "server.scpiPort", &self.scpi_port);
+        project.server.scpi_port = scpi_port.unwrap_or(1);
 
         project.export.format = self.export_format;
         project.export.directory = PathBuf::from(self.export_directory.trim());
@@ -320,7 +322,9 @@ impl ProjectForm {
         if project.export.directory.as_os_str().is_empty() {
             project.export.directory = PathBuf::from(".");
         }
-        if self.scpi_port.trim() == self.device_port.trim() {
+        // Compared as numbers, not as text: `5025` and `05025` are the same port, and two
+        // fields that failed to parse are already reporting that on their own.
+        if matches!((scpi_port, device_port), (Some(scpi), Some(device)) if scpi == device) {
             errors.push(FieldError::of(
                 "server.scpiPort",
                 "must differ from the device port",
@@ -466,9 +470,10 @@ fn non_negative(errors: &mut Vec<FieldError>, field: &str, text: &str) -> f64 {
     }
 }
 
-fn port(errors: &mut Vec<FieldError>, field: &str, text: &str) -> u16 {
+/// Parse a port field, recording a rejection and returning `None` when it will not parse.
+fn port(errors: &mut Vec<FieldError>, field: &str, text: &str) -> Option<u16> {
     match text.trim().parse::<u32>() {
-        Ok(value) if (1..=65_535).contains(&value) => value as u16,
+        Ok(value) if (1..=65_535).contains(&value) => Some(value as u16),
         _ => {
             errors.push(FieldError::of(
                 field,
@@ -477,7 +482,7 @@ fn port(errors: &mut Vec<FieldError>, field: &str, text: &str) -> u16 {
                     input: text.trim().to_owned(),
                 },
             ));
-            1
+            None
         }
     }
 }
@@ -680,6 +685,36 @@ mod tests {
         form.scpi_port = form.device_port.clone();
         let errors = form.to_project(&base).unwrap_err();
         assert!(errors.iter().any(|e| e.message.contains("device port")));
+    }
+
+    #[test]
+    fn a_duplicate_port_is_caught_however_it_is_spelled() {
+        let base = project();
+        // Each spelling parses to 9123, the port the device is already using, so the texts
+        // differ while the ports collide.
+        for spelling in ["09123", "+9123", " 9123"] {
+            let mut form = ProjectForm::from_project(&base);
+            form.scpi_port = spelling.to_owned();
+            let errors = form.to_project(&base).unwrap_err();
+            assert!(
+                errors.iter().any(|e| e.issue == Issue::DuplicatePort),
+                "{spelling:?} must collide with the device port: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_unparsable_ports_do_not_look_like_a_duplicate() {
+        let base = project();
+        let mut form = ProjectForm::from_project(&base);
+        form.scpi_port = String::new();
+        form.device_port = String::new();
+        let errors = form.to_project(&base).unwrap_err();
+        assert!(
+            !errors.iter().any(|e| e.issue == Issue::DuplicatePort),
+            "a blank field reports itself, not a port collision: {errors:?}"
+        );
+        assert_eq!(errors.len(), 2, "{errors:?}");
     }
 
     #[test]

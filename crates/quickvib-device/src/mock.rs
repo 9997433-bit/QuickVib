@@ -146,7 +146,10 @@ impl MockBackend {
         self.fault = fault;
     }
 
-    /// How a stream that ran to its fault limit should report itself.
+    /// How a stream that ran into its fault limit should report itself.
+    ///
+    /// Only called once the limit has actually been reached: a fault whose limit is beyond
+    /// the requested sample count never fires, because the run finishes first.
     fn fault_outcome(&self, delivered: u64) -> Result<StreamOutcome, DeviceError> {
         match self.fault {
             MockFault::LinkLostAfter(_) => Err(DeviceError::link_lost(format!(
@@ -272,7 +275,9 @@ impl DeviceBackend for MockBackend {
             delivered += batch_len as u64;
         }
 
-        self.fault_outcome(delivered)
+        // Reaching here means every requested sample was delivered, so no fault limit was
+        // crossed on the way: the loop returns through `fault_outcome` when one is.
+        Ok(StreamOutcome::Completed)
     }
 
     fn stop(&self) -> Result<(), DeviceError> {
@@ -651,6 +656,19 @@ mod tests {
         let (samples, outcome) = collect(&mut backend, 5000);
         assert_eq!(samples.len(), 250);
         assert_eq!(outcome, StreamOutcome::LinkLost);
+    }
+
+    #[test]
+    fn a_fault_limit_beyond_the_request_never_fires() {
+        // Both faults are defined as "deliver this many samples, then misbehave". A run that
+        // asks for fewer than the limit is satisfied in full, so it completed.
+        let mut backend = open_mock(1000.0);
+        for fault in [MockFault::ShortStream(5000), MockFault::LinkLostAfter(5000)] {
+            backend.set_fault(fault);
+            let (samples, outcome) = collect(&mut backend, 250);
+            assert_eq!(samples.len(), 250, "{fault:?}");
+            assert_eq!(outcome, StreamOutcome::Completed, "{fault:?}");
+        }
     }
 
     #[test]

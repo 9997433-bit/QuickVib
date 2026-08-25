@@ -133,6 +133,19 @@ pub fn validate(project: &Project) -> Result<(), ProjectError> {
         ));
     }
 
+    // Both listeners are bound at startup, so a project that names one port twice cannot be
+    // started at all. Rejecting it here means the operator finds out when the file is loaded
+    // rather than from a bind failure on the next launch.
+    if project.server.scpi_port == project.device.port {
+        return Err(ProjectError::invalid(
+            "server.scpiPort",
+            format!(
+                "must differ from device.port, both are {}",
+                project.server.scpi_port
+            ),
+        ));
+    }
+
     for (i, component) in project.mock.signal.components.iter().enumerate() {
         if !component.frequency_hz.is_finite()
             || !component.amplitude.is_finite()
@@ -290,6 +303,19 @@ mod tests {
             validate(&p).unwrap_err().scpi_error(),
             ScpiError::IllegalParameterValue
         );
+    }
+
+    #[test]
+    fn the_scpi_port_and_the_device_port_must_differ() {
+        let mut p = base();
+        p.server.scpi_port = 5025;
+        p.device.port = 5025;
+        let err = validate(&p).unwrap_err();
+        assert_eq!(err.scpi_error(), ScpiError::IllegalParameterValue);
+        assert!(err.to_string().contains("device.port"), "{err}");
+
+        p.device.port = 9123;
+        validate(&p).unwrap();
     }
 
     #[test]

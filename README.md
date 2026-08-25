@@ -464,7 +464,7 @@ lives at `samples/Test.proj`.
 | `export.format` / `.directory` / `.includeHeader` | `"CSV"` / `"."` / `true` | Export defaults |
 | `identity.*` | see above | The four `*IDN?` fields, so an existing UTS ID check can be satisfied |
 | `server.maxSessions` | `8` | Concurrent SCPI session cap |
-| `server.scpiPort` | `5025` | SCPI listen port stored in the project; `--scpi-port` overrides |
+| `server.scpiPort` | `5025` | SCPI listen port stored in the project; `--scpi-port` overrides. Must differ from `device.port` |
 | `mock.signal.*` | one 100 Hz component | Sine components, Gaussian noise σ, and PRNG seed |
 
 The most recently loaded or saved project is remembered (`%LOCALAPPDATA%\QuickVib\` on Windows,
@@ -1161,7 +1161,7 @@ IDLE ──INIT──▶ ARMED ──首个采样──▶ RECORDING ──收�
 | `export.format` / `.directory` / `.includeHeader` | `"CSV"` / `"."` / `true` | 导出默认值 |
 | `identity.*` | 见上 | `*IDN?` 的四个字段，可满足既有 UTS 的标识校验 |
 | `server.maxSessions` | `8` | 并发 SCPI 会话上限 |
-| `server.scpiPort` | `5025` | 工程中记录的 SCPI 监听端口；`--scpi-port` 优先 |
+| `server.scpiPort` | `5025` | 工程中记录的 SCPI 监听端口；`--scpi-port` 优先。不能与 `device.port` 相同 |
 | `mock.signal.*` | 一个 100 Hz 分量 | 正弦分量、高斯噪声 σ、随机数种子 |
 
 最近一次加载或保存的工程路径会被记录（Windows 上为 `%LOCALAPPDATA%\QuickVib\`，Unix 上为
