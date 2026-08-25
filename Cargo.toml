@@ -8,6 +8,7 @@ members = [
     "crates/quickvib-device",
     "crates/quickvib-scpi",
     "crates/quickvib-engine",
+    "crates/quickvib-ui",
     "crates/quickvib-testkit",
     "crates/quickvib-sim",
     "crates/quickvib-m300",
@@ -24,6 +25,7 @@ default-members = [
     "crates/quickvib-device",
     "crates/quickvib-scpi",
     "crates/quickvib-engine",
+    "crates/quickvib-ui",
     "crates/quickvib-testkit",
     "crates/quickvib-sim",
 ]
@@ -44,6 +46,7 @@ quickvib-measure = { path = "crates/quickvib-measure", version = "1.0.0" }
 quickvib-device = { path = "crates/quickvib-device", version = "1.0.0" }
 quickvib-scpi = { path = "crates/quickvib-scpi", version = "1.0.0" }
 quickvib-engine = { path = "crates/quickvib-engine", version = "1.0.0" }
+quickvib-ui = { path = "crates/quickvib-ui", version = "1.0.0" }
 quickvib-testkit = { path = "crates/quickvib-testkit", version = "1.0.0" }
 quickvib-sim = { path = "crates/quickvib-sim", version = "1.0.0" }
 
