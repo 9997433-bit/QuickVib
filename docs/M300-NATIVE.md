@@ -198,12 +198,14 @@ and record the date, SDK version, and QuickVib commit alongside the results.
 
 | Item | State |
 | --- | --- |
-| `crates/quickvib-m300` | Scaffolding only — crate skeleton, feature flags, `bindgen`-gated `build.rs`, resolver skeleton |
+| `Cargo.toml` | Written — `libloading` as a `cfg(windows)` dependency, `bindgen` as an optional build-dependency behind the non-default `bindgen` feature |
+| `build.rs` | Written — no-op in a normal build; with `--features bindgen` it regenerates from the header and fails on drift from the committed snapshot (§4) |
+| `src/resolver.rs` | Written — the probe order of §1 as pure path arithmetic, plus `ResolveError`, which names every path tried and maps to `-241`. Platform-neutral and unit-tested on Linux |
 | `src/ffi.rs` / `src/ffi_generated.rs` | **Not written.** Blocked on Q-A (the real header) |
 | `M300Backend` (`DeviceBackend` impl) | **Not written.** Blocked on Q-A and Q-B |
-| Real SDK calls | **None.** No `unsafe extern "C"` declaration exists yet |
+| Real SDK calls | **None.** No `unsafe` block and no `extern "C"` declaration exists yet; nothing calls `libloading` |
 | Fake DLL | **None, and none will be added** (D21) |
-| Linux impact | None — the crate is out of `default-members`, and all Windows code is `#[cfg(windows)]`, so it is an empty crate on Linux even under `cargo build --workspace` |
+| Linux impact | None. The crate is outside `default-members`, so a plain `cargo build`/`test`/`clippy` never compiles it. Under `--workspace` it does compile and its tests pass on Linux, by design: everything that touches the OS loader is `#[cfg(windows)]`, and everything platform-neutral is tested where CI can see it |
 
 **Before Phase 6 starts**, Q-A (ABI), Q-B (socket ownership), and Q-C (bitness and build toolchain)
 from `docs/PLAN.md` §21.1 must be answered. Every `TBD` above is downstream of one of those three.
