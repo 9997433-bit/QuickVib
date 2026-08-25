@@ -302,6 +302,9 @@ impl Engine {
     /// `-221` while a run is in flight, or whatever
     /// [`quickvib_project::ProjectError::scpi_error`] reports.
     pub fn load_project(&self, path: &Path) -> Result<(), ScpiError> {
+        // A fast failure, not the authoritative one: reading the file releases the lock, so
+        // an `INIT` from another session can land in between. `adopt_project` re-checks
+        // under the same lock it writes through.
         if self.lock().state.is_running() {
             return Err(ScpiError::SettingsConflict);
         }
@@ -309,7 +312,7 @@ impl Engine {
             self.log(Level::Warn, "proj", format!("load failed: {e}"));
             e.scpi_error()
         })?;
-        self.adopt_project(project, Some(path.to_path_buf()));
+        self.adopt_project(project, Some(path.to_path_buf()))?;
         self.remember_project(path);
         self.log(
             Level::Info,
@@ -327,22 +330,33 @@ impl Engine {
     /// does at runtime.
     ///
     /// The previous capture is discarded, and the run status goes with it: `REC:STAT?` must
-    /// never answer `COMPLETE` while `FETC?` answers `-230`. A run in flight owns the state
-    /// machine, so its status is left alone — every caller already refuses to adopt while
-    /// [`State::is_running`].
-    pub fn adopt_project(&self, project: Project, path: Option<PathBuf>) {
+    /// never answer `COMPLETE` while `FETC?` answers `-230`.
+    ///
+    /// The in-flight check happens under the same lock hold as the write. A caller that
+    /// looked at [`Engine::state`] first and then lost the race to `INIT` — the window
+    /// `MMEM:LOAD:STAT` opens while it reads the file off disk — is refused here instead of
+    /// replacing the duration, format and measurement settings the run in flight is already
+    /// working from.
+    ///
+    /// # Errors
+    /// [`ScpiError::SettingsConflict`] (`-221`) while a run is in flight.
+    pub fn adopt_project(&self, project: Project, path: Option<PathBuf>) -> Result<(), ScpiError> {
         let mut guard = self.lock();
+        if guard.state.is_running() {
+            return Err(ScpiError::SettingsConflict);
+        }
         guard.duration_seconds = project.recording.duration_seconds;
         guard.format = project.export.format;
         guard.result = None;
         guard.outcome = None;
-        if let Ok(next) = transition(guard.state, Event::Invalidate) {
-            guard.state = next;
-        }
+        // `Invalidate` has an edge out of every settled state, and the two running states
+        // were refused above.
+        guard.state = transition(guard.state, Event::Invalidate).unwrap_or(State::Idle);
         guard.project = Some(project);
         guard.project_path = path;
         drop(guard);
         self.changed.notify_all();
+        Ok(())
     }
 
     fn project_name(&self) -> String {
@@ -587,7 +601,7 @@ impl Engine {
                 timestamp: format_iso8601(result.finished_at),
                 sample_rate_hz: project.map_or(0.0, |p| p.device.sample_rate_hz),
                 unit: project.map_or(SampleUnit::VelocityUmPerSec, |p| p.device.unit),
-                duration_seconds: guard.duration_seconds,
+                duration_seconds: result.duration_seconds,
                 include_header: project.is_none_or(|p| p.export.include_header),
             };
             let directory =
@@ -680,39 +694,44 @@ impl Engine {
 
     fn spawn_reader(self: &Arc<Self>, plan: RunPlan, unit: SampleUnit, cancel: CancelToken) {
         let engine = Arc::clone(self);
-        let spawned = std::thread::Builder::new()
-            .name("quickvib-reader".to_owned())
-            .spawn(move || {
-                let sequence = plan.sequence;
-                // Panic containment (D27): a panic in the reader aborts the run with -240
-                // rather than taking the process down.
-                let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    engine.run_capture(&plan, unit, &cancel);
-                }));
-                if outcome.is_err() {
-                    engine.log(Level::Error, "rec", "reader thread panicked");
-                    engine.finish_run(sequence, RunOutcome::LinkLost, Vec::new(), Duration::ZERO);
-                }
-            });
+        let sequence = plan.sequence;
+        let spawned = spawn_detached(READER_THREAD, move || {
+            // Panic containment (D27): a panic in the reader aborts the run with -240
+            // rather than taking the process down.
+            let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                engine.run_capture(&plan, unit, &cancel);
+            }));
+            if outcome.is_err() {
+                engine.log(Level::Error, "rec", "reader thread panicked");
+                engine.finish_run(sequence, RunOutcome::LinkLost, Vec::new(), Duration::ZERO);
+            }
+        });
         if spawned.is_err() {
             self.log(Level::Error, "rec", "could not spawn the reader thread");
-            self.finish_run(0, RunOutcome::LinkLost, Vec::new(), Duration::ZERO);
+            // Naming the run matters: `INIT` already advanced the sequence, and
+            // `finish_run` refuses anything that does not match it. Getting this wrong
+            // leaves the instrument pinned in `Armed` until the next `*RST`.
+            self.finish_run(sequence, RunOutcome::LinkLost, Vec::new(), Duration::ZERO);
         }
     }
 
     fn spawn_watchdog(self: &Arc<Self>, plan: RunPlan, cancel: CancelToken) {
         let engine = Arc::clone(self);
-        let spawned = std::thread::Builder::new()
-            .name("quickvib-watchdog".to_owned())
-            .spawn(move || {
-                // Completion cancels the token, which wakes this thread early instead of
-                // leaving it parked for the full watchdog period.
-                if !cancel.wait_timeout(plan.watchdog) {
-                    engine.fire_watchdog(plan.sequence);
-                }
-            });
+        let sequence = plan.sequence;
+        let spawned = spawn_detached(WATCHDOG_THREAD, move || {
+            // Completion cancels the token, which wakes this thread early instead of
+            // leaving it parked for the full watchdog period.
+            if !cancel.wait_timeout(plan.watchdog) {
+                engine.fire_watchdog(plan.sequence);
+            }
+        });
         if spawned.is_err() {
-            self.log(Level::Warn, "rec", "could not spawn the watchdog thread");
+            self.log(Level::Error, "rec", "could not spawn the watchdog thread");
+            // An unsupervised run has nothing left to end it if the device stalls, so end
+            // it now. The reader — which may well have started — sees the cancellation and
+            // finishes the run itself; if it never started, this is a no-op because the
+            // reader's own failure path already settled the state.
+            self.cancel_run(Some(sequence), RunOutcome::LinkLost);
         }
     }
 
@@ -726,6 +745,14 @@ impl Engine {
             );
             return;
         };
+
+        // `stream` owns the backend for the whole run, so `stop_backend` has an empty slot
+        // to look at and `DeviceBackend::stop` is unreachable until the run ends. A backend
+        // that parks in a blocking read hands out its wake-up in advance instead; hooking it
+        // onto the run's token is what makes `ABOR` and the watchdog reach it.
+        if let Some(stop) = backend.stop_handle() {
+            cancel.on_cancel(move || stop());
+        }
 
         let started_at = self.clock.monotonic();
         let request = StreamRequest::new(plan.expected_samples as u64, unit, plan.sample_rate_hz);
@@ -782,33 +809,38 @@ impl Engine {
         self.changed.notify_all();
     }
 
-    fn fire_watchdog(&self, sequence: u64) {
+    /// Cancel the run in flight and record how the reader should report it.
+    ///
+    /// `sequence` names the run to cancel, so a caller left over from a previous one cannot
+    /// touch its successor; `None` means "whatever is running now". Returns whether a run
+    /// was actually cancelled.
+    fn cancel_run(&self, sequence: Option<u64>, reason: RunOutcome) -> bool {
         let cancel = {
             let mut guard = self.lock();
-            if guard.sequence != sequence || !guard.state.is_running() {
-                return;
+            if !guard.state.is_running() || sequence.is_some_and(|s| s != guard.sequence) {
+                return false;
             }
-            guard.abort_reason = Some(RunOutcome::TimedOut);
+            guard.abort_reason = Some(reason);
             guard.cancel.clone()
         };
-        self.log(Level::Warn, "rec", "watchdog fired");
         self.stop_backend();
+        // Runs every hook registered on the token, which is how a backend parked in a
+        // blocking read is woken (see `run_capture`).
         cancel.cancel();
+        true
+    }
+
+    fn fire_watchdog(&self, sequence: u64) {
+        if self.cancel_run(Some(sequence), RunOutcome::TimedOut) {
+            self.log(Level::Warn, "rec", "watchdog fired");
+        }
     }
 
     /// Handle `ABOR`. Never an error, even when nothing is running.
     pub fn abort(&self) {
-        let cancel = {
-            let mut guard = self.lock();
-            if !guard.state.is_running() {
-                return;
-            }
-            guard.abort_reason = Some(RunOutcome::Aborted);
-            guard.cancel.clone()
-        };
-        self.log(Level::Info, "rec", "abort requested");
-        self.stop_backend();
-        cancel.cancel();
+        if self.cancel_run(None, RunOutcome::Aborted) {
+            self.log(Level::Info, "rec", "abort requested");
+        }
     }
 
     fn stop_backend(&self) {
@@ -837,6 +869,9 @@ impl Engine {
                 .project
                 .as_ref()
                 .is_some_and(|p| p.measurement.remove_dc);
+            // Still the value the run was armed with: every setter and `adopt_project`
+            // answer `-221` until the run settles, and this runs before it does.
+            let duration_seconds = guard.duration_seconds;
 
             let (next_event, summary) = if outcome.is_success() {
                 match NonEmptyCapture::new(&buffer) {
@@ -861,6 +896,7 @@ impl Engine {
                             samples: Arc::new(buffer),
                             measurements,
                             elapsed,
+                            duration_seconds,
                             finished_at: self.clock.wall_clock(),
                         });
                         (Event::Completed, summary)
@@ -912,13 +948,40 @@ impl Engine {
     }
 }
 
+const READER_THREAD: &str = "quickvib-reader";
+const WATCHDOG_THREAD: &str = "quickvib-watchdog";
+
+#[cfg(test)]
+thread_local! {
+    /// Test seam: the thread whose next spawn must fail. Exhausting the real thread limit
+    /// is not something a unit test can do without destabilising the rest of the suite, and
+    /// the recovery paths are exactly the ones that leave a run wedged when they are wrong.
+    /// Thread-local, so a test setting it cannot disturb one running beside it.
+    static FAIL_SPAWN: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// Spawn a named, detached engine thread.
+fn spawn_detached(name: &'static str, body: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_SPAWN.with(std::cell::Cell::get) == Some(name) {
+        return Err(std::io::Error::other("injected spawn failure"));
+    }
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(body)
+        .map(drop)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
     use super::*;
     use quickvib_core::{NullLogger, TestClock};
-    use quickvib_device::{MockBackend, MockFault, MockSignalSpec, SignalComponent};
+    use quickvib_device::{
+        DeviceError, DeviceOpenOptions, MockBackend, MockFault, MockSignalSpec, SampleBatch,
+        SignalComponent,
+    };
 
     const PROJECT: &str = r#"{
         "schemaVersion": 1,
@@ -973,8 +1036,105 @@ mod tests {
 
     fn loaded_engine() -> Arc<Engine> {
         let engine = engine_with(MockFault::None);
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
         engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
+        engine
+    }
+
+    /// A backend that parks in a blocking read and wakes only through the handle it hands
+    /// out — the shape a native SDK read has, and the one polling the cancellation token
+    /// cannot rescue.
+    struct BlockingBackend {
+        released: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl BlockingBackend {
+        fn new() -> Self {
+            Self {
+                released: Arc::new((Mutex::new(false), Condvar::new())),
+            }
+        }
+
+        fn release(released: &(Mutex<bool>, Condvar)) {
+            let (lock, changed) = released;
+            *lock.lock().unwrap_or_else(PoisonError::into_inner) = true;
+            changed.notify_all();
+        }
+    }
+
+    impl DeviceBackend for BlockingBackend {
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        fn open(&mut self, _options: &DeviceOpenOptions) -> Result<(), DeviceError> {
+            Ok(())
+        }
+
+        fn capabilities(&self) -> Result<DeviceCapabilities, DeviceError> {
+            Ok(DeviceCapabilities {
+                model: "Blocking".to_owned(),
+                serial_number: "BLOCK-0001".to_owned(),
+                firmware_version: "1.0.0-test".to_owned(),
+                sample_rate_hz: 1000.0,
+                unit: SampleUnit::VelocityUmPerSec,
+                max_record_seconds: 3600.0,
+            })
+        }
+
+        fn stream(
+            &mut self,
+            _request: &StreamRequest,
+            _on_batch: &mut dyn FnMut(SampleBatch<'_>) -> Result<(), DeviceError>,
+            _cancel: &CancelToken,
+        ) -> Result<StreamOutcome, DeviceError> {
+            let (lock, changed) = &*self.released;
+            let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            // The token is deliberately never polled. The timeout is only a net so a
+            // regression fails the test instead of hanging the suite.
+            let (guard, expired) = changed
+                .wait_timeout_while(guard, Duration::from_secs(5), |released| !*released)
+                .unwrap_or_else(PoisonError::into_inner);
+            drop(guard);
+            if expired.timed_out() {
+                Ok(StreamOutcome::TimedOut)
+            } else {
+                Ok(StreamOutcome::Cancelled)
+            }
+        }
+
+        fn stop(&self) -> Result<(), DeviceError> {
+            Self::release(&self.released);
+            Ok(())
+        }
+
+        fn stop_handle(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+            let released = Arc::clone(&self.released);
+            Some(Arc::new(move || Self::release(&released)))
+        }
+    }
+
+    fn blocking_engine() -> Arc<Engine> {
+        let engine = Engine::new(EngineConfig {
+            clock: Arc::new(TestClock::at_epoch()),
+            logger: Arc::new(NullLogger),
+            backend: Box::new(BlockingBackend::new()),
+            last_project: None,
+            version: "1.0.0-test".to_owned(),
+        });
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
+        engine
+    }
+
+    /// Run `body` with the next spawn of `thread` forced to fail.
+    fn with_failing_spawn<T>(thread: &'static str, body: impl FnOnce() -> T) -> T {
+        FAIL_SPAWN.with(|cell| cell.set(Some(thread)));
+        let result = body();
+        FAIL_SPAWN.with(|cell| cell.set(None));
+        result
     }
 
     fn run_to_completion(engine: &Arc<Engine>) -> bool {
@@ -1028,7 +1188,9 @@ mod tests {
         assert!(run_to_completion(&engine));
         assert_eq!(engine.state(), State::Complete);
 
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
 
         // The whole point: no state that claims a fetchable capture, and no fetchable data.
         assert_eq!(engine.state(), State::Idle);
@@ -1061,13 +1223,17 @@ mod tests {
     #[test]
     fn adopting_a_project_does_not_resurrect_an_aborted_capture() {
         let engine = engine_with(MockFault::Stall);
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
         engine.start_recording().unwrap();
         engine.abort();
         assert!(!engine.wait_for_run());
         assert_eq!(engine.state(), State::Aborted);
 
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
 
         assert_eq!(engine.state(), State::Idle);
         assert_eq!(engine.capture().unwrap_err(), ScpiError::DataCorruptOrStale);
@@ -1076,15 +1242,106 @@ mod tests {
     #[test]
     fn adopting_a_project_mid_run_leaves_the_run_in_flight() {
         let engine = engine_with(MockFault::Stall);
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
         engine.start_recording().unwrap();
 
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        let mut replacement = Project::from_json_str(PROJECT).unwrap();
+        replacement.recording.duration_seconds = 2.0;
+        replacement.export.format = ExportFormat::Txt;
+        assert_eq!(
+            engine.adopt_project(replacement, None),
+            Err(ScpiError::SettingsConflict)
+        );
 
         assert!(engine.state().is_running());
+        // Nothing the run is working from moved underneath it.
+        assert_eq!(engine.duration_seconds(), 0.05);
+        assert_eq!(engine.format(), ExportFormat::Csv);
+
         engine.abort();
         assert!(!engine.wait_for_run());
         assert_eq!(engine.state(), State::Aborted);
+    }
+
+    #[test]
+    fn adopting_a_project_mid_run_is_refused_under_the_lock() {
+        let engine = engine_with(MockFault::Stall);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
+        engine.set_duration(0.03).unwrap();
+
+        // The window `MMEM:LOAD:STAT` opens: the caller saw a settled instrument, then
+        // spent time reading the file off disk while another session armed a run. The
+        // refusal has to come from the same lock hold as the write, not from that stale
+        // observation.
+        assert!(!engine.state().is_running());
+        engine.start_recording().unwrap();
+
+        let mut replacement = Project::from_json_str(PROJECT).unwrap();
+        replacement.name = "Replacement".to_owned();
+        replacement.recording.duration_seconds = 1.5;
+        replacement.export.format = ExportFormat::Txt;
+        assert_eq!(
+            engine.adopt_project(replacement, None),
+            Err(ScpiError::SettingsConflict)
+        );
+
+        assert!(engine.state().is_running());
+        assert_eq!(engine.duration_seconds(), 0.03);
+        assert_eq!(engine.format(), ExportFormat::Csv);
+        assert_eq!(engine.project().unwrap().name, "EngineTest");
+
+        engine.abort();
+        assert!(!engine.wait_for_run());
+    }
+
+    #[test]
+    fn a_reader_that_cannot_be_spawned_settles_the_run() {
+        let engine = loaded_engine();
+        with_failing_spawn(READER_THREAD, || engine.start_recording().unwrap());
+
+        // Nothing is left to finish this run, so `INIT` must have finished it itself
+        // rather than leaving the instrument pinned in `Armed` until the next `*RST`.
+        assert_eq!(engine.state(), State::Aborted);
+        assert!(!engine.wait_for_run());
+        assert_eq!(engine.pop_error().error, ScpiError::HardwareError);
+        // And the instrument still works.
+        assert!(run_to_completion(&engine));
+        assert_eq!(engine.capture().unwrap().len(), 50);
+    }
+
+    #[test]
+    fn a_watchdog_that_cannot_be_spawned_ends_the_run_it_cannot_supervise() {
+        let engine = engine_with(MockFault::Stall);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
+
+        with_failing_spawn(WATCHDOG_THREAD, || engine.start_recording().unwrap());
+
+        // A stalled run with no watchdog would never end on its own.
+        assert!(!engine.wait_for_run());
+        assert_eq!(engine.state(), State::Aborted);
+        assert_eq!(engine.pop_error().error, ScpiError::HardwareError);
+    }
+
+    #[test]
+    fn abort_reaches_a_backend_that_only_wakes_through_its_stop_handle() {
+        let engine = blocking_engine();
+        engine.start_recording().unwrap();
+        // Let the reader thread get into the blocking read.
+        std::thread::sleep(Duration::from_millis(20));
+
+        engine.abort();
+
+        assert!(!engine.wait_for_run());
+        assert_eq!(engine.state(), State::Aborted);
+        // The stop handle is what released the read. Without it the reader would still be
+        // parked when the watchdog fires a second later, and this would be a -365.
+        assert_eq!(engine.pop_error().error, ScpiError::NoError);
     }
 
     #[test]
@@ -1117,7 +1374,9 @@ mod tests {
     #[test]
     fn an_aborted_run_publishes_no_data() {
         let engine = engine_with(MockFault::Stall);
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
         let recorder = Arc::new(Recorder {
             lines: Mutex::new(Vec::new()),
         });
@@ -1147,7 +1406,7 @@ mod tests {
         let mut project = Project::from_json_str(PROJECT).unwrap();
         // Watchdog = duration * multiplier + 1 s, so keep it just over a second.
         project.recording.duration_seconds = 0.01;
-        engine.adopt_project(project, None);
+        engine.adopt_project(project, None).unwrap();
 
         engine.start_recording().unwrap();
         assert!(!engine.wait_for_run());
@@ -1158,7 +1417,9 @@ mod tests {
     #[test]
     fn a_short_stream_aborts_with_240() {
         let engine = engine_with(MockFault::ShortStream(10));
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
         engine.start_recording().unwrap();
         assert!(!engine.wait_for_run());
         assert_eq!(engine.state(), State::Aborted);
@@ -1168,7 +1429,9 @@ mod tests {
     #[test]
     fn a_dropped_link_aborts_with_240() {
         let engine = engine_with(MockFault::LinkLostAfter(10));
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
         engine.start_recording().unwrap();
         assert!(!engine.wait_for_run());
         assert_eq!(engine.pop_error().error, ScpiError::HardwareError);
@@ -1200,7 +1463,7 @@ mod tests {
         let mut project = Project::from_json_str(PROJECT).unwrap();
         project.device.sample_rate_hz = 100_000.0;
         project.recording.max_capture_bytes = 4_000;
-        engine.adopt_project(project, None);
+        engine.adopt_project(project, None).unwrap();
         assert_eq!(engine.set_duration(10.0), Err(ScpiError::DataOutOfRange));
     }
 
@@ -1260,7 +1523,7 @@ mod tests {
         project.identity.model = "VibMaster".to_owned();
         project.identity.serial_number = "SN-42".to_owned();
         project.identity.firmware_version = "9.9".to_owned();
-        engine.adopt_project(project, None);
+        engine.adopt_project(project, None).unwrap();
         assert_eq!(engine.identity(), "Acme,VibMaster,SN-42,9.9");
     }
 
@@ -1334,12 +1597,29 @@ mod tests {
     }
 
     #[test]
+    fn export_metadata_reports_the_runs_duration_not_a_later_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = loaded_engine();
+        assert!(run_to_completion(&engine));
+
+        // Legal from `Complete`, and it must not rewrite the preamble of a capture that is
+        // already on the books.
+        engine.set_duration(2.0).unwrap();
+        let written = engine.export_capture(&dir.path().join("run.csv")).unwrap();
+
+        let csv = std::fs::read_to_string(written).unwrap();
+        let preamble: String = csv.lines().take(7).collect::<Vec<_>>().join(" | ");
+        assert!(preamble.contains("# durationSeconds=0.05"), "{preamble}");
+        assert!(preamble.contains("# samples=50"), "{preamble}");
+    }
+
+    #[test]
     fn export_resolves_relative_paths_against_the_project_directory() {
         let dir = tempfile::tempdir().unwrap();
         let engine = engine_with(MockFault::None);
         let mut project = Project::from_json_str(PROJECT).unwrap();
         project.export.directory = dir.path().join("out");
-        engine.adopt_project(project, None);
+        engine.adopt_project(project, None).unwrap();
         assert!(run_to_completion(&engine));
         let written = engine.export_capture(Path::new("run.csv")).unwrap();
         assert_eq!(written, dir.path().join("out").join("run.csv"));
@@ -1349,7 +1629,9 @@ mod tests {
     #[test]
     fn configuration_changes_during_a_run_are_rejected() {
         let engine = engine_with(MockFault::Stall);
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
         engine.start_recording().unwrap();
 
         assert_eq!(engine.set_duration(1.0), Err(ScpiError::SettingsConflict));

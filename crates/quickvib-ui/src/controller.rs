@@ -246,11 +246,7 @@ impl UiController {
     /// the same `-221` rule the SCPI layer applies.
     pub fn apply(&mut self) -> Result<ApplyOutcome, Vec<FieldError>> {
         if self.engine.state().is_running() {
-            return Err(vec![FieldError::of(
-                "project",
-                "a recording is in flight; stop it before applying changes",
-                Issue::RunInFlight,
-            )]);
+            return Err(run_in_flight());
         }
 
         let edited = self.form.to_project(&self.base)?;
@@ -258,7 +254,11 @@ impl UiController {
             restart_required: restart_required(&self.base, &edited),
         };
 
-        self.engine.adopt_project(edited.clone(), self.path.clone());
+        // The engine repeats the check under the lock it writes through, so a run started
+        // since the one above is refused here rather than having its settings replaced.
+        self.engine
+            .adopt_project(edited.clone(), self.path.clone())
+            .map_err(|_| run_in_flight())?;
         self.base = edited;
         self.form = ProjectForm::from_project(&self.base);
         Ok(outcome)
@@ -385,6 +385,15 @@ impl UiController {
     }
 }
 
+/// The one error *Apply* reports for a recording in flight, in the shape the form uses.
+fn run_in_flight() -> Vec<FieldError> {
+    vec![FieldError::of(
+        "project",
+        "a recording is in flight; stop it before applying changes",
+        Issue::RunInFlight,
+    )]
+}
+
 /// Which of the edited settings the already-running process cannot pick up.
 ///
 /// The two listeners are bound at startup and the backend is opened with the sample rate and
@@ -462,7 +471,9 @@ mod tests {
     }
 
     fn with_project(engine: Arc<Engine>) -> UiController {
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
         UiController::new(engine)
     }
 
@@ -670,7 +681,7 @@ mod tests {
         let engine = engine();
         let mut project = Project::from_json_str(PROJECT).unwrap();
         project.export.directory = dir.path().to_path_buf();
-        engine.adopt_project(project, None);
+        engine.adopt_project(project, None).unwrap();
 
         let controller = UiController::new(engine);
         assert!(controller

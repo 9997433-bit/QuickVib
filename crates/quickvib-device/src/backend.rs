@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use quickvib_core::{CancelToken, SampleUnit};
@@ -160,6 +161,21 @@ pub trait DeviceBackend: Send {
     /// # Errors
     /// Any [`DeviceError`] the transport reports while stopping.
     fn stop(&self) -> Result<(), DeviceError>;
+
+    /// A detached handle that does what [`DeviceBackend::stop`] does, taken *before* the
+    /// stream starts.
+    ///
+    /// The reader thread owns the backend for the whole run, so nothing else can hold a
+    /// `&self` to call `stop` on while `stream` holds `&mut self`. A backend that parks in
+    /// a blocking read therefore has to hand out the wake-up in advance: the engine
+    /// registers whatever is returned here as a [`CancelToken`] hook, so `ABOR` and the
+    /// watchdog can shut the socket down (`docs/PLAN.md` 10).
+    ///
+    /// The default is `None`, which is the right answer for a backend whose `stream` polls
+    /// the cancellation token itself.
+    fn stop_handle(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
 
     /// Tear the transport down, reporting failures that `Drop` cannot.
     ///

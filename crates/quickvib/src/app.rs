@@ -239,7 +239,8 @@ impl AppBuilder {
                 // An auto-loaded project still records where it came from.
                 engine.auto_load_path()
             });
-            engine.adopt_project(project, path);
+            // Nothing has been started yet, so the in-flight refusal cannot fire here.
+            let _ = engine.adopt_project(project, path);
         }
 
         let max_sessions = self

@@ -186,7 +186,9 @@ mod tests {
             last_project: None,
             version: "1.0.0-test".to_owned(),
         });
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
         engine
     }
 
@@ -286,7 +288,9 @@ mod tests {
         assert_eq!(send(&engine, "REC:STAT?"), "COMPLETE");
 
         // What the GUI's Apply button does.
-        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine
+            .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+            .unwrap();
 
         assert_eq!(send(&engine, "REC:STAT?"), "IDLE");
         assert_eq!(send(&engine, "REC:WAIT?"), "0");
@@ -305,7 +309,7 @@ mod tests {
         let engine = engine();
         let mut project = Project::from_json_str(PROJECT).unwrap();
         project.measurement.response_decimals = 2;
-        engine.adopt_project(project, None);
+        engine.adopt_project(project, None).unwrap();
         send(&engine, "INIT");
         send(&engine, "REC:WAIT?");
         let peak = send(&engine, "CALC:MEAS:PEAK?");

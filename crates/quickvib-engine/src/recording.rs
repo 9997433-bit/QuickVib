@@ -62,6 +62,9 @@ pub struct RunResult {
     pub measurements: MeasurementSet,
     /// Monotonic time from the first sample to the last.
     pub elapsed: Duration,
+    /// The record duration this run was armed with, kept so export metadata describes the
+    /// capture rather than whatever `CONF:REC:DUR` was set to afterwards.
+    pub duration_seconds: f64,
     /// Wall-clock time the run finished, for the CSV preamble.
     pub finished_at: std::time::SystemTime,
 }

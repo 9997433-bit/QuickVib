@@ -32,7 +32,8 @@
 //!     )
 //!     .unwrap(),
 //!     None,
-//! );
+//! )
+//! .unwrap();
 //!
 //! for command in parse_line(b"INIT").unwrap() {
 //!     dispatch(&engine, &command);

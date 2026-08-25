@@ -37,7 +37,9 @@ fn engine_with(fault: MockFault) -> Arc<Engine> {
         last_project: None,
         version: "1.0.0-test".to_owned(),
     });
-    engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+    engine
+        .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
+        .unwrap();
     engine
 }
 
@@ -76,7 +78,7 @@ fn adopting_project_after_completed_capture_must_clear_complete_status() {
 
     let mut replacement = Project::from_json_str(PROJECT).unwrap();
     replacement.name = "Replacement".to_owned();
-    engine.adopt_project(replacement, None);
+    engine.adopt_project(replacement, None).unwrap();
 
     assert_ne!(
         engine.state(),
@@ -92,7 +94,7 @@ fn adopting_project_after_completed_capture_makes_fetch_and_measurements_stale()
 
     let mut replacement = Project::from_json_str(PROJECT).unwrap();
     replacement.name = "Replacement".to_owned();
-    engine.adopt_project(replacement, None);
+    engine.adopt_project(replacement, None).unwrap();
 
     assert_eq!(engine.capture().unwrap_err(), ScpiError::DataCorruptOrStale);
     assert_eq!(
