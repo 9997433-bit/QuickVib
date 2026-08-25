@@ -40,23 +40,18 @@ impl Level {
         matches!(self, Self::Warn | Self::Error)
     }
 
-    /// Parse a `--log-level` value.
-    ///
-    /// # Errors
-    /// Returns `Err(())` if the string names no level.
-    pub fn parse(s: &str) -> Result<Self, ()> {
-        for level in [
+    /// Parse a `--log-level` value, returning `None` if the string names no level.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        [
             Self::Trace,
             Self::Debug,
             Self::Info,
             Self::Warn,
             Self::Error,
-        ] {
-            if s.eq_ignore_ascii_case(level.as_str()) {
-                return Ok(level);
-            }
-        }
-        Err(())
+        ]
+        .into_iter()
+        .find(|level| s.eq_ignore_ascii_case(level.as_str()))
     }
 }
 
@@ -109,7 +104,7 @@ mod tests {
     fn parse_is_case_insensitive() {
         assert_eq!(Level::parse("WARN").unwrap(), Level::Warn);
         assert_eq!(Level::parse("trace").unwrap(), Level::Trace);
-        assert!(Level::parse("verbose").is_err());
+        assert!(Level::parse("verbose").is_none());
     }
 
     #[test]

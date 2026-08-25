@@ -53,8 +53,9 @@ tempfile = ">=3.10, <3.15"
 
 [workspace.lints.rust]
 missing_docs = "deny"
-rust_2018_idioms = "deny"
 unreachable_pub = "warn"
+# Lint *groups* must carry an explicit lower priority so the specific lints above win.
+rust_2018_idioms = { level = "deny", priority = -1 }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
