@@ -10,7 +10,8 @@ records a fixed-duration vibration capture, returns the samples and the derived 
 (peak, RMS, peak-to-peak), and exports CSV or TXT.
 
 The same executable also has a **desktop window** for setting a project up by hand — sample rate,
-filters, ranges, ports, export — with a Start/Stop button and live peak/RMS/p-p. `--headless` is
+filters, ranges, ports, export — with a Start/Stop button and live peak/RMS/p-p. It is an
+**operator panel in Simplified Chinese**, with an English switch in the title bar. `--headless` is
 the UTS mode and never opens one; see [§2.1](#21-desktop-window-vs---headless).
 
 Scope is deliberately narrow: QuickVib **records, measures, and exports**. It does not decide
@@ -55,7 +56,7 @@ port, and the bundled **`m300-sim`** executable is a stand-in that dials in and 
 | --- | --- |
 | Build | A stable Rust toolchain, edition 2021 (the pinned version is in `rust-toolchain.toml`) |
 | Run (mock backend) | Nothing. The executable is statically linked — no runtime, no redistributable. Any OS: Windows, Linux, macOS |
-| Run the desktop window | A build with `--features gui` and a desktop session. On Linux that means X11 or Wayland plus `libxkbcommon`, which every desktop install already has; the window is not needed for, and not built by, the UTS path |
+| Run the desktop window | A build with `--features gui` and a desktop session. On Linux that means X11 or Wayland plus `libxkbcommon`, which every desktop install already has. No Chinese system font is needed — one is embedded ([§2.1](#fonts)). The window is not needed for, and not built by, the UTS path |
 | Run (real M300) | Windows x64, an M300 vibrometer, and the M300 SDK v1.2.0 installed on the host. The SDK is **not** bundled with QuickVib |
 | Cross-compile a Windows `.exe` from Linux | `gcc-mingw-w64-x86-64` and the `x86_64-pc-windows-gnu` Rust target |
 
@@ -112,35 +113,102 @@ A binary built *without* `--features gui` has no window to open, so a run withou
 prints the banner and serves from the console exactly as it always has. A binary built *with* it
 on a machine that has no display says so and does the same, rather than refusing to start.
 
-The window edits the project — the same JSON `samples/Test.proj` uses, validated by the same rules
-`MMEM:LOAD:STAT` applies:
+#### Language
 
-| Panel | Fields |
+The window opens in **Simplified Chinese**. Every operator-visible string is Chinese: menus, tabs,
+buttons, field labels, units, hints, validation messages and the status line. The **中文 / EN**
+switch in the top-right corner flips the whole window, including the messages already on screen,
+and the choice is remembered in `ui-language.txt` next to the auto-load-last file
+(`%LOCALAPPDATA%\QuickVib\` on Windows, `$XDG_STATE_HOME/quickvib/` on Unix). Deleting that file,
+or starting on a machine that has never run QuickVib, gives Chinese again.
+
+Nothing raw from the schema reaches the screen. `velocity_um_s` is shown as **速度 μm/s**,
+`100000` Hz is annotated **= 100 kHz**, the backends read **模拟 / TCP设备 / M300**, and the state
+machine reads **空闲 / 武装 / 录制中 / 完成 / 已中止** rather than `IDLE`/`ARMED`/… The English
+side of the switch is a real translation, not the enum spellings.
+
+#### Layout
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ QuickVib   Test               [已连接] [录制状态 完成] [SCPI 15025 · 设备 19123] [中文|EN] │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 文件▼ 打开 保存 另存为 应用 还原                                    [配置|高级] │
+├────────────────────────────────────────────┬─────────────────────────────────┤
+│ 项目信息 · 设备与采样 · 滤波器 · 量程       │ 仪表面板                        │
+│ 录制 · 通信端口 · 数据导出                  │  录制状态 / 连接状态            │
+│                                            │  [开始录制] [停止]              │
+│ (scrolling column of cards)                │  测量结果 峰值 / 有效值 / 峰峰值 │
+│                                            │  样本数 · 时长 · 导出           │
+│                                            │  链路信息                       │
+├────────────────────────────────────────────┴─────────────────────────────────┤
+│ ● 完成 · 已连接   录制已开始          实际监听端口: SCPI 15025 · 设备 19123   │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+The **title bar** carries the product name, the open project and whether it has unsaved edits, then
+three status chips — device link, record state, live ports — and the language switch. The **left
+column** scrolls and holds the configuration, grouped into cards; the **right column** is fixed
+width and is the instrument. The **status bar** repeats the state, shows the outcome of the last
+action, and always names the ports this process is actually listening on.
+
+The left column edits the project — the same JSON `samples/Test.proj` uses, validated by the same
+rules `MMEM:LOAD:STAT` applies:
+
+| Card | Fields |
 | --- | --- |
-| Project | Name, description |
-| Acquisition | Sample rate, data type (velocity / displacement / acceleration), record duration, backend (mock / tcp / m300) |
-| Filters | Low-pass cutoff and high-pass cutoff. Unpinned, the low-pass follows the Nyquist frequency as the sample rate changes; tick **pin** to hold a value of your own |
-| Measuring ranges | Velocity, displacement and acceleration ranges; the one matching the selected data type is shown in bold |
-| Ports | SCPI port and device port |
-| Export | CSV or TXT, directory, CSV preamble, DC removal |
+| 项目信息 · Project | Name, description |
+| 设备与采样 · Device and sampling | Sample rate (annotated in kHz as you type), data type (速度 μm/s / 位移 μm / 加速度 m/s²), backend (模拟 / TCP设备 / M300) |
+| 滤波器 · Filters | Low-pass and high-pass cutoff, with the hint **采样率与低通须同档**. Unpinned, the low-pass follows the Nyquist frequency as the sample rate changes; tick **固定截止** to hold a value of your own |
+| 量程 · Measuring ranges | 速度量程 μm/s, 位移量程 μm, 加速度量程 m/s²; the one matching the selected data type is shown in bold |
+| 录制 · Recording | Record duration, watchdog multiplier |
+| 通信端口 · I/O ports | The live listening ports, read-only, above the project ports — see below |
+| 数据导出 · Export | CSV or TXT, directory, CSV preamble, DC removal |
 
-**Apply** is the button that matters. It parses and validates every field, and on success hands the
-edited project to the *running* engine — the very same `Arc<Engine>` the SCPI sessions dispatch
-onto, so a `CONF:REC:DUR?` arriving on port 5025 a moment later answers with the duration just
-typed. On failure nothing is pushed and each rejected field is listed with the reason. Five
-settings cannot be picked up by a process that has already bound its sockets and opened its
-backend — the two ports, the backend, the sample rate and the data type — so Apply saves them and
-says which need a restart.
+**应用 / Apply** is the button that matters. It parses and validates every field, and on success
+hands the edited project to the *running* engine — the very same `Arc<Engine>` the SCPI sessions
+dispatch onto, so a `CONF:REC:DUR?` arriving on port 5025 a moment later answers with the duration
+just typed. On failure nothing is pushed and each rejected field is listed, in the window's
+language, with the reason. Five settings cannot be picked up by a process that has already bound
+its sockets and opened its backend — the two ports, the backend, the sample rate and the data
+type — so Apply saves them and says which need a restart.
 
-The rest of the buttons: **Revert** re-reads the engine's project, **Save** / **Save as…** write it
-to a `.proj` file (this also applies it first), **Open…** loads one, **Start record** / **Stop**
-are `INIT` and `ABOR`, and **Export capture** is `MMEM:STOR:TRAC` with the path resolved against
+The rest of the buttons: **还原 / Revert** re-reads the engine's project, **保存** / **另存为**
+write it to a `.proj` file (this also applies it first), **打开** loads one, **开始录制** /
+**停止** are `INIT` and `ABOR`, and **导出数据** is `MMEM:STOR:TRAC` with the path resolved against
 the export directory. The right-hand panel is the instrument: state, device link, `*IDN?`, session
-count, and the peak, RMS and peak-to-peak of the last completed capture.
+count, and the 峰值 / 有效值 / 峰峰值 of the last completed capture.
 
-The **Advanced** tab is a placeholder. Laser power, TEC set point, PID gains and external
+The **高级 / Advanced** tab is a placeholder. Laser power, TEC set point, PID gains and external
 triggering are real device controls with no representation in the version-1 project schema, and
 QuickVib does not invent settings the instrument cannot honour.
+
+#### Live ports vs project ports
+
+A project file stores `server.scpiPort` and `device.port`, but `--scpi-port` and `--device-port`
+override them, so the ports a running QuickVib is listening on are frequently *not* the ones in the
+file. The window never conflates the two:
+
+* **实际监听端口 / Live listening ports** — what this process bound, passed into the window at
+  launch by the app after the listeners came up. Read-only, in the title bar, in the 通信端口 card
+  and in the status bar. These are the ports to point the UTS at.
+* **项目端口（需重启）/ Project ports (restart required)** — the editable fields. They are written
+  to the `.proj` file and take effect the next time QuickVib starts; applying them does not rebind
+  a live socket.
+
+When the two disagree — the ordinary case for `quickvib --scpi-port 15025` against a project that
+says `5025` — the card says so explicitly rather than letting the form look authoritative.
+
+#### Fonts
+
+Chinese text needs a CJK font, and egui's built-in fonts have none, so the crate **embeds one**:
+Noto Sans SC, [SIL Open Font License 1.1](crates/quickvib-ui/assets/OFL.txt), instanced to weight
+400 and subset to GB2312 level 1 plus the punctuation and symbols the window draws
+(`crates/quickvib-ui/assets/build-font.py` regenerates it). Nothing is downloaded at build time and
+no system font is consulted, so the window renders identically on a bare Windows test-cell machine
+and on a Linux CI box. A unit test walks every label in both languages against the font's `cmap`,
+so adding a string the subset cannot draw fails `cargo test` instead of showing boxes on the
+instrument.
 
 ## 3. How the UTS launches QuickVib
 
@@ -541,11 +609,13 @@ cargo fmt --check
 ```
 
 The GUI is off by default, and the test suite does not need it on: the window's view model —
-form-to-project mapping, validation messages, what Apply does to a live engine — lives in
-`quickvib-ui` with no windowing dependency and is covered by the plain `cargo test` run above, on a
-machine with no display. A separate CI job compiles, lints and tests the window itself, which also
-needs no display, because winit loads X11, Wayland and xkbcommon at run time rather than link
-time.
+form-to-project mapping, validation messages, what Apply does to a live engine, which port is live
+and which is only in the project file, and the Chinese and English spelling of every label — lives
+in `quickvib-ui` with no windowing dependency and is covered by the plain `cargo test` run above,
+on a machine with no display. That includes the font: the coverage test reads the embedded `cmap`
+directly, so a Chinese string with no glyph behind it fails on a headless CI box rather than on the
+bench. A separate CI job compiles, lints and tests the window itself, which also needs no display,
+because winit loads X11, Wayland and xkbcommon at run time rather than link time.
 
 `cargo test` covers everything except the native M300 path: the Windows-only `quickvib-m300` crate is
 excluded from the workspace's `default-members`, so a plain build, test, or clippy run on Linux never
@@ -590,7 +660,7 @@ is what ships.
 | `quickvib-device` | `DeviceBackend` trait, mock and socket-fed backends, LE `f32` framer, inbound listener |
 | `quickvib-scpi` | Lexer, command tree, parsed commands, response formatting |
 | `quickvib-engine` | State machine, error queue, OPC, recording pipeline, dispatch |
-| `quickvib-ui` | Desktop front end: the display-free view model always, the egui window behind `--features gui` |
+| `quickvib-ui` | Desktop front end: the display-free view model and the Chinese/English label table always, the egui window and the embedded CJK font behind `--features gui` |
 | `quickvib-sim` | The `m300-sim` executable: an inbound M300 stand-in (§9.1) |
 | `quickvib-testkit` | Dev-only shared test fixtures; ships nothing |
 | `quickvib-m300` | **Windows-only**, out of `default-members`, the only crate containing `unsafe` |
@@ -601,7 +671,9 @@ is what ships.
 | --- | --- |
 | Exit code `3` at startup | A port is already in use. Another QuickVib instance, or something else on `5025`/`9123`. Pick a free port with `--scpi-port` / `--device-port` |
 | No window appears | Either the binary was built without `--features gui`, or `--headless` was passed, or the host has no display — the last two print a line saying so and go on serving from the console. Both servers run either way |
-| A GUI edit did not reach the instrument | Only **Apply** pushes the form into the running engine. Ports, backend, sample rate and data type are saved but need a restart, which Apply says explicitly |
+| A GUI edit did not reach the instrument | Only **应用 / Apply** pushes the form into the running engine. Ports, backend, sample rate and data type are saved but need a restart, which Apply says explicitly |
+| The window shows a port the UTS cannot connect to | Read **实际监听端口 / Live listening ports** in the status bar, not the editable 项目端口 fields: `--scpi-port` / `--device-port` override the project file, and the window labels the two separately for exactly this reason ([§2.1](#live-ports-vs-project-ports)) |
+| The window is in Chinese and you want English | The **中文 / EN** switch is in the top-right of the title bar; the choice is remembered in `ui-language.txt` under the state directory. Chinese is the default on first launch and after that file is deleted |
 | Exit code `2` | Bad arguments — unknown flag, missing value, or a port outside 1–65535. Usage is on stderr |
 | Exit code `4` | `--project` was given but the file is missing or fails schema validation. The log line carries the JSON line and column |
 | `SYST:DEV:CONN?` returns `0` | The M300 has not dialed in. Check that it is powered, on the same network, configured to connect to this host on `9123`, that no firewall blocks the inbound connection, and that `device.allowedPeers` (if set) includes its address. With `--backend mock` this is always `1`, because the mock needs no link |
@@ -662,8 +734,8 @@ UTS（单元测试系统）调用。它是一个自包含的 Windows 可执行�
 定长振动采集，返回采样数据与导出的标量结果（峰值、有效值 RMS、峰峰值），并可导出 CSV 或 TXT。
 
 同一个可执行文件还带有一个**桌面窗口**，用于手工配置工程——采样率、滤波器、量程、端口、导出——并提供
-开始/停止按钮以及实时的峰值 / RMS / 峰峰值。`--headless` 是 UTS 使用的模式，永远不会打开窗口，参见
-[§2.1](#21-桌面窗口与---headless)。
+开始/停止按钮以及实时的峰值 / RMS / 峰峰值。窗口是**简体中文的操作面板**，标题栏提供切换到英文的开
+关。`--headless` 是 UTS 使用的模式，永远不会打开窗口，参见 [§2.1](#21-桌面窗口与---headless)。
 
 功能边界是刻意收窄的：QuickVib 只负责**采集、测量、导出**。它不做合格判定，不驱动 DUT 振动，也不负责
 重试策略——这些仍由 UTS 负责。
@@ -701,7 +773,7 @@ UTS（单元测试系统）调用。它是一个自包含的 Windows 可执行�
 | --- | --- |
 | 编译 | Rust stable 工具链，edition 2021（具体版本固定在 `rust-toolchain.toml`） |
 | 运行（模拟后端） | 无需任何依赖。可执行文件为静态链接，不需要运行库或分发包。任意操作系统均可 |
-| 运行桌面窗口 | 需要以 `--features gui` 编译，并有可用的桌面会话。在 Linux 上即 X11 或 Wayland 加 `libxkbcommon`，任何桌面发行版都自带；UTS 路径既不需要窗口，也不会编译它 |
+| 运行桌面窗口 | 需要以 `--features gui` 编译，并有可用的桌面会话。在 Linux 上即 X11 或 Wayland 加 `libxkbcommon`，任何桌面发行版都自带。无需系统安装中文字体——程序已内嵌一份（[§2.1](#字体)）。UTS 路径既不需要窗口，也不会编译它 |
 | 运行（真实 M300） | Windows x64、M300 测振仪，以及主机上已安装的 M300 SDK v1.2.0。SDK **不随本仓库分发** |
 | 在 Linux 上交叉编译 Windows `.exe` | `gcc-mingw-w64-x86-64` 与 `x86_64-pc-windows-gnu` 目标 |
 
@@ -757,31 +829,88 @@ cargo build --release --features gui
 前一样在控制台提供服务。启用了该 feature、但运行在没有显示环境的机器上时，程序会说明情况并同样回退
 到控制台，而不是拒绝启动。
 
-窗口编辑的就是工程文件——与 `samples/Test.proj` 相同的 JSON，并使用与 `MMEM:LOAD:STAT` 完全相同的校验
+#### 界面语言
+
+窗口默认以**简体中文**打开。操作员能看到的每一处文字都是中文：菜单、标签页、按钮、字段名、单位、提
+示、校验信息与状态栏。右上角的 **中文 / EN** 开关会切换整个窗口，包括已经显示在屏幕上的提示信息；所
+选语言记录在状态目录下的 `ui-language.txt`（Windows 上为 `%LOCALAPPDATA%\QuickVib\`，Unix 上为
+`$XDG_STATE_HOME/quickvib/`）。删除该文件、或在从未运行过 QuickVib 的机器上启动，都会回到中文。
+
+schema 中的原始枚举值不会出现在界面上：`velocity_um_s` 显示为**速度 μm/s**，`100000` Hz 旁标注
+**= 100 kHz**，后端显示为**模拟 / TCP设备 / M300**，状态机显示为**空闲 / 武装 / 录制中 / 完成 /
+已中止**，而不是 `IDLE`/`ARMED`/…。切换到英文时同样是完整的英文译文，而不是枚举拼写。
+
+#### 布局
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ QuickVib   Test               [已连接] [录制状态 完成] [SCPI 15025 · 设备 19123] [中文|EN] │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 文件▼ 打开 保存 另存为 应用 还原                                    [配置|高级] │
+├────────────────────────────────────────────┬─────────────────────────────────┤
+│ 项目信息 · 设备与采样 · 滤波器 · 量程       │ 仪表面板                        │
+│ 录制 · 通信端口 · 数据导出                  │  录制状态 / 连接状态            │
+│                                            │  [开始录制] [停止]              │
+│ （可滚动的配置卡片列）                      │  测量结果 峰值 / 有效值 / 峰峰值 │
+│                                            │  样本数 · 时长 · 导出           │
+│                                            │  链路信息                       │
+├────────────────────────────────────────────┴─────────────────────────────────┤
+│ ● 完成 · 已连接   录制已开始          实际监听端口: SCPI 15025 · 设备 19123   │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**标题栏**显示产品名、当前工程及是否有未保存的修改，随后是三个状态标签——设备链路、录制状态、实际监
+听端口——以及语言开关。**左栏**可滚动，按卡片分组放置全部配置；**右栏**宽度固定，就是仪表面板。**状
+态栏**重复显示当前状态、最近一次操作的结果，并始终标出本进程实际监听的端口。
+
+左栏编辑的就是工程文件——与 `samples/Test.proj` 相同的 JSON，并使用与 `MMEM:LOAD:STAT` 完全相同的校验
 规则：
 
-| 面板 | 字段 |
+| 卡片 | 字段 |
 | --- | --- |
-| Project | 名称、描述 |
-| Acquisition | 采样率、数据类型（速度 / 位移 / 加速度）、录制时长、后端（mock / tcp / m300） |
-| Filters | 低通与高通截止频率。未固定时，低通随采样率跟随奈奎斯特频率；勾选 **pin** 可固定为自定义值 |
-| Measuring ranges | 速度、位移、加速度三个量程；与当前数据类型对应的那一项以粗体显示 |
-| Ports | SCPI 端口与设备端口 |
-| Export | CSV 或 TXT、目录、CSV 注释头、是否去直流 |
+| 项目信息 | 名称、说明 |
+| 设备与采样 | 采样率（输入时同步标注 kHz）、数据类型（速度 μm/s / 位移 μm / 加速度 m/s²）、数据来源（模拟 / TCP设备 / M300） |
+| 滤波器 | 低通与高通截止频率，并给出提示**采样率与低通须同档**。未固定时，低通随采样率跟随奈奎斯特频率；勾选**固定截止**可锁定为自定义值 |
+| 量程 | 速度量程 μm/s、位移量程 μm、加速度量程 m/s²；与当前数据类型对应的那一项以粗体显示 |
+| 录制 | 录制时长、看门狗倍数 |
+| 通信端口 | 上半部分是只读的实际监听端口，下半部分是项目端口——见下文 |
+| 数据导出 | CSV 或 TXT、目录、CSV 注释头、是否去直流 |
 
-真正关键的按钮是 **Apply**。它解析并校验每一个字段，成功后把编辑好的工程交给**正在运行**的引擎——也就
+真正关键的按钮是**应用**。它解析并校验每一个字段，成功后把编辑好的工程交给**正在运行**的引擎——也就
 是各个 SCPI 会话所共享的那一个 `Arc<Engine>`，因此紧接着从 5025 端口发来的 `CONF:REC:DUR?` 返回的就是
-刚刚输入的时长。校验失败则什么都不写入，并逐条列出被拒绝的字段与原因。有五项设置是已经绑定套接字、
-已经打开后端的进程无法重新读取的——两个端口、后端、采样率与数据类型——Apply 会把它们保存下来，并明确
-提示哪些需要重启才能生效。
+刚刚输入的时长。校验失败则什么都不写入，并按当前界面语言逐条列出被拒绝的字段与原因。有五项设置是已
+经绑定套接字、已经打开后端的进程无法重新读取的——两个端口、数据来源、采样率与数据类型——应用会把它们
+保存下来，并明确提示哪些需要重启才能生效。
 
-其余按钮：**Revert** 重新读取引擎中的工程，**Save** / **Save as…** 写入 `.proj` 文件（写入前会先执行
-Apply），**Open…** 加载工程，**Start record** / **Stop** 对应 `INIT` 与 `ABOR`，**Export capture** 对应
+其余按钮：**还原**重新读取引擎中的工程，**保存** / **另存为**写入 `.proj` 文件（写入前会先执行应
+用），**打开**加载工程，**开始录制** / **停止**对应 `INIT` 与 `ABOR`，**导出数据**对应
 `MMEM:STOR:TRAC`，路径同样基于导出目录解析。右侧面板显示仪器状态：状态机、设备链路、`*IDN?`、会话数，
-以及最近一次完成采集的峰值、RMS 与峰峰值。
+以及最近一次完成采集的峰值、有效值与峰峰值。
 
-**Advanced** 标签页目前是占位。激光功率、TEC 设定点、PID 增益与外部触发都是真实的设备控制项，但在版本
+**高级**标签页目前是占位。激光功率、TEC 设定点、PID 增益与外部触发都是真实的设备控制项，但在版本
 1 的工程 schema 中没有对应字段；QuickVib 不会凭空造出仪器无法执行的设置。
+
+#### 实际监听端口与项目端口
+
+工程文件里记录着 `server.scpiPort` 与 `device.port`，但 `--scpi-port` 与 `--device-port` 会覆盖它们，
+因此正在运行的 QuickVib 所监听的端口**经常不是**文件里写的那两个。窗口从不把两者混为一谈：
+
+* **实际监听端口** —— 本进程真正绑定的端口，由 app 在监听器启动之后传给窗口。只读，同时出现在标题
+  栏、通信端口卡片与状态栏。UTS 要连的就是这两个端口。
+* **项目端口（需重启）** —— 可编辑的字段。它们只写入 `.proj` 文件、下次启动生效；点击应用不会让已经
+  绑定的套接字换端口。
+
+当两者不一致时——例如用 `quickvib --scpi-port 15025` 启动一个写着 `5025` 的工程，这是最常见的情
+况——卡片会直接给出提示，而不是让表单看起来像是权威值。
+
+#### 字体
+
+显示中文需要 CJK 字体，而 egui 内置字体没有中文字形，因此 crate 里**内嵌了一份**：Noto Sans SC，采用
+[SIL 开放字体许可证 1.1](crates/quickvib-ui/assets/OFL.txt)，已固定为 400 字重，并按 GB2312 一级字库
+加上窗口用到的标点与符号做了子集化（可用 `crates/quickvib-ui/assets/build-font.py` 重新生成）。构建
+过程不下载任何东西，运行时也不读取系统字体，因此在干净的 Windows 测试工位与 Linux CI 机器上渲染结果
+完全一致。有一个单元测试会把两种语言下的每一条文案逐字与字体的 `cmap` 比对，因此新增一条字体画不出
+的中文会让 `cargo test` 失败，而不是在仪器上显示成方块。
 
 ## 3. UTS 如何启动 QuickVib
 
@@ -1157,10 +1286,12 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-GUI 默认关闭，测试套件也不需要打开它：窗口的视图模型——表单与工程结构之间的映射、校验提示、Apply 对
-运行中引擎所做的事——都放在不依赖任何窗口库的 `quickvib-ui` 中，由上面这条普通的 `cargo test` 在没有显
-示器的机器上覆盖。窗口本身由一个独立的 CI job 编译、lint 并测试，同样不需要显示器，因为 winit 是在运
-行时而非链接时加载 X11、Wayland 与 xkbcommon 的。
+GUI 默认关闭，测试套件也不需要打开它：窗口的视图模型——表单与工程结构之间的映射、校验提示、应用对运
+行中引擎所做的事、哪个端口是实际监听的而哪个只写在工程文件里，以及每一条文案的中英文拼写——都放在不
+依赖任何窗口库的 `quickvib-ui` 中，由上面这条普通的 `cargo test` 在没有显示器的机器上覆盖。字体也在
+其中：覆盖率测试直接读取内嵌字体的 `cmap`，因此缺字形的中文会在无头 CI 上就失败，而不是等到仪器现
+场。窗口本身由一个独立的 CI job 编译、lint 并测试，同样不需要显示器，因为 winit 是在运行时而非链接时
+加载 X11、Wayland 与 xkbcommon 的。
 
 `cargo test` 覆盖除原生 M300 路径以外的全部代码：仅限 Windows 的 `quickvib-m300` crate 被排除在
 workspace 的 `default-members` 之外，因此在 Linux 上执行普通的 build / test / clippy 时根本不会编译它。
@@ -1202,7 +1333,7 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 | `quickvib-device` | `DeviceBackend` trait、模拟后端与套接字驱动后端、小端 `f32` framer、入站监听 |
 | `quickvib-scpi` | 词法分析、命令树、命令解析结果、响应格式化 |
 | `quickvib-engine` | 状态机、错误队列、OPC、录制流水线、命令分发 |
-| `quickvib-ui` | 桌面前端：不依赖窗口库的视图模型始终编译，egui 窗口位于 `--features gui` 之后 |
+| `quickvib-ui` | 桌面前端：不依赖窗口库的视图模型与中英文文案表始终编译，egui 窗口与内嵌 CJK 字体位于 `--features gui` 之后 |
 | `quickvib-sim` | `m300-sim` 可执行程序：模拟 M300 主动连入的替身（§9.1） |
 | `quickvib-testkit` | 仅供测试使用的共享夹具，不参与发布 |
 | `quickvib-m300` | **仅 Windows**，不在 `default-members` 中，是唯一包含 `unsafe` 的 crate |
@@ -1213,7 +1344,9 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 | --- | --- |
 | 启动即退出码 `3` | 端口被占用：可能是另一个 QuickVib 实例，或其他程序占用了 `5025`/`9123`。用 `--scpi-port` / `--device-port` 换端口 |
 | 没有出现窗口 | 要么编译时没有加 `--features gui`，要么传了 `--headless`，要么主机没有显示环境——后两种情况都会打印一行说明并继续在控制台提供服务。无论哪种情况，两个服务都在运行 |
-| GUI 中的修改没有生效 | 只有 **Apply** 会把表单推入运行中的引擎。端口、后端、采样率与数据类型会被保存，但需要重启，Apply 会明确提示 |
+| GUI 中的修改没有生效 | 只有**应用**会把表单推入运行中的引擎。端口、数据来源、采样率与数据类型会被保存，但需要重启，应用会明确提示 |
+| 窗口上显示的端口连不上 | 请看状态栏里的**实际监听端口**，而不是可编辑的**项目端口**字段：`--scpi-port` / `--device-port` 会覆盖工程文件，窗口正是为此把两者分开标注（[§2.1](#实际监听端口与项目端口)） |
+| 想把界面切换成英文 | 标题栏右上角有 **中文 / EN** 开关；所选语言记录在状态目录下的 `ui-language.txt`。首次启动、以及删除该文件之后，默认都是中文 |
 | 退出码 `2` | 参数错误——未知参数、缺少取值，或端口不在 1–65535。用法信息输出在 stderr |
 | 退出码 `4` | 指定了 `--project` 但文件不存在或 schema 校验失败。日志中包含出错的 JSON 行号与列号 |
 | `SYST:DEV:CONN?` 返回 `0` | M300 尚未连入。检查设备是否上电、是否与主机同网段、是否配置为连接本机 `9123`、防火墙是否拦截入站连接，以及 `device.allowedPeers`（若配置）是否包含其地址。`--backend mock` 下该查询恒为 `1`，因为模拟后端不需要链路 |

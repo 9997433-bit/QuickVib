@@ -161,6 +161,9 @@ undecided; the genuinely unanswerable items are isolated in §21.1 and only gate
 | D25 | Shipped artifact is `x86_64-pc-windows-msvc` built on a Windows runner with `-C target-feature=+crt-static`; `x86_64-pc-windows-gnu` cross-built from Linux is a developer/CI convenience target, gated but not shipped | Default | §18.2. The MSVC target matches whatever the SDK vendor built against and removes the VC++ redistributable from the deployment checklist. See Q12 and Q-C (SDK bitness) |
 | D26 | `Cargo.lock` **is committed** (this workspace produces a binary, not a library) and CI builds with `--locked` | Decided | Reproducible UTS deployments; a surprise `serde_json` patch bump should never appear between a smoke test and a shipped exe |
 | D27 | Panic strategy stays `unwind`; every long-lived thread body is wrapped so a panic kills one SCPI session, not the process | Decided | `panic = "abort"` would let one malformed command take down an instrument the UTS depends on. See §7.10 |
+| D28 | **The window's default language is Simplified Chinese**, English behind a title-bar switch, from one exhaustively tested label table; the preference lives in `ui-language.txt` in the state directory and a fresh machine always starts Chinese. Errors carry a structured `Issue` and localise at display time, never a pre-rendered sentence | Decided | The operators are Chinese-speaking technicians; an English-first panel with a translation bolted on gets read wrong under time pressure. §19 Phase 8 |
+| D29 | **The window shows the ports the process bound, separately from the ports the project file asks for.** The app passes the live `SocketAddr`s in at launch; the editable fields are labelled as taking effect at the next start, and a mismatch is called out. The window never rebinds a live listener | Decided | `--scpi-port` overrides the file, so a form showing `5025` while the process listens on `15025` is a wrong answer to "what do I connect to". Rebinding would drop a UTS session mid-run. §19 Phase 8 |
+| D30 | **A subset of Noto Sans SC (SIL OFL 1.1) is committed under `crates/quickvib-ui/assets` and embedded with `include_bytes!` behind the `gui` feature**, with a test asserting the subset covers every label in both languages | Decided | egui ships no CJK glyphs and a locked-down test cell is the wrong place to discover a missing system font. A data file is not a dependency, so D18 stands; the coverage test turns a tofu box on the bench into a red CI run |
 
 ---
 
@@ -345,10 +348,16 @@ quickvib/
     ├── quickvib-engine/              # state machine, error queue, OPC, recording pipeline, dispatch
     │   └── src/{lib.rs, state.rs, engine.rs, errors.rs, opc.rs, recording.rs, dispatch.rs}
     ├── quickvib-ui/                  # desktop front end (§19, Phase 8); egui behind `gui`
+    │   ├── assets/                   # NotoSansSC subset + OFL.txt + build-font.py
     │   └── src/
+    │       ├── i18n.rs               # Lang::{Zh, En}, the label table, ZH default + preference
     │       ├── form.rs               # ProjectForm: the window's fields as plain data
     │       ├── controller.rs         # load/save/apply/record over the shared Arc<Engine>
+    │       ├── ports.rs              # what this process bound vs what the project asks for
     │       ├── status.rs             # one poll of the instrument, taken between repaints
+    │       ├── options.rs            # what the app hands the window at launch
+    │       ├── font.rs               # the embedded CJK subset and its coverage test
+    │       ├── theme.rs              # palette, spacing, and the card/grid/readout helpers
     │       └── window.rs             # the egui view; feature-gated, holds no rules
     ├── quickvib-sim/                 # BINARY crate -> m300-sim; the inbound device stand-in (§15)
     │   └── src/{lib.rs, main.rs}
@@ -402,6 +411,11 @@ quickvib (bin)
 | `serde` (derive) + `serde_json` | `quickvib-project` only | A hand-rolled JSON parser is ~600 lines of the exact category of code that produces silent data bugs (escapes, exponents, surrogate pairs, duplicate keys). `serde_json` is the de-facto standard, has no transitive deps beyond `itoa`/`ryu`/`memchr`/`serde`, and gives us forward-compatible "ignore unknown fields" for free via `#[serde(default)]` + `deny_unknown_fields` off | ~600 lines of parser + a lifetime of edge cases |
 | `libloading` | `quickvib-m300` only, `[target.'cfg(windows)'.dependencies]` | Runtime `LoadLibraryW` + `GetProcAddress` with lifetime-checked symbols, so a missing SDK becomes `-241,"Hardware missing"` instead of a process that will not start. Alternative is hand-written `windows-sys` FFI to the loader — more `unsafe`, not less | ~80 lines of `unsafe` loader code |
 | `eframe` (egui) | `quickvib-ui` only, `optional = true` behind the non-default `gui` feature (§19, Phase 8) | A desktop window is not something to hand-roll: it is a windowing system, an event loop, a GPU surface and text layout. egui is immediate-mode, pure Rust with no C build script, and runs the same code on Windows and Linux, so the window is developed and screenshotted on the CI box and shipped on the bench. Off by default, so the UTS product, `cargo test --workspace` and the Windows cross-build carry the unchanged two-crate graph | An OS-specific UI toolkit binding, or no GUI |
+
+**Not a dependency:** the Noto Sans SC subset under `crates/quickvib-ui/assets` (D30) is a
+committed data file read by `include_bytes!`, not a crate. It adds nothing to the build graph and
+nothing to a `--headless` binary, and its licence (SIL OFL 1.1) travels with it in the same
+directory.
 
 **Build dependency:** `bindgen`, in `quickvib-m300` only, behind the non-default `bindgen` feature
 (§11). It needs `libclang` and the vendor header, so it never runs in CI; it is a verification tool
@@ -1321,16 +1335,44 @@ Linux plus a green `cargo clippy -- -D warnings`. **None of this starts until th
    `--headless`, so the UTS path is untouched. Validation stays in `quickvib-project` — the GUI
    surfaces `ProjectError`, it does not re-implement the rules.
 
-   **Landed** as `quickvib-ui`, in two halves. `form`/`controller`/`status` are the view model:
-   no windowing dependency, so what *Apply* does to a live engine, how a rejected field reports
-   itself and how the low-pass cutoff tracks Nyquist are all covered by the ordinary
-   `cargo test --workspace` run on a machine with no display. `window` is the egui view behind
-   the off-by-default `gui` feature. Both accept loops move to background threads and the
-   window takes the main thread; closing it cancels them. A host that cannot give us a window
-   is a warning and a fall back to the console, never a failed start. Still to come: the
-   advanced laser/TEC/PID/trigger tab, which waits on schema and backend support for those
-   controls, and re-opening the backend in place so a sample-rate change does not need a
-   restart.
+   **Landed** as `quickvib-ui`, in two halves. `i18n`/`form`/`controller`/`ports`/`status` are
+   the view model: no windowing dependency, so what *Apply* does to a live engine, how a
+   rejected field reports itself, how the low-pass cutoff tracks Nyquist, which port is live
+   and which is only in the project file, and the Chinese and English spelling of every label
+   are all covered by the ordinary `cargo test --workspace` run on a machine with no display.
+   `window`/`theme`/`font` are the egui view behind the off-by-default `gui` feature. Both
+   accept loops move to background threads and the window takes the main thread; closing it
+   cancels them. A host that cannot give us a window is a warning and a fall back to the
+   console, never a failed start. Still to come: the advanced laser/TEC/PID/trigger tab, which
+   waits on schema and backend support for those controls, and re-opening the backend in place
+   so a sample-rate change does not need a restart.
+
+   **The operator language is Simplified Chinese** (D28). The window opens in Chinese and every
+   operator-visible string — menus, tabs, buttons, field labels, units, hints, validation
+   messages, notices — comes from one label table in `i18n.rs`, which carries both spellings for
+   every entry and is checked exhaustively by test. English is a switch in the title bar, stored
+   in `ui-language.txt` under the same state directory as auto-load-last; the default on a fresh
+   machine is always Chinese. Nothing raw from the schema reaches the screen: `velocity_um_s`
+   renders as 速度 μm/s, `100000` Hz is annotated `= 100 kHz`, the backends read
+   模拟 / TCP设备 / M300 and the states 空闲 / 武装 / 录制中 / 完成 / 已中止. Validation and
+   action failures localise at the point of display rather than at the point of failure —
+   `FieldError` carries an `Issue` and `ActionError` an enum, not a rendered English sentence —
+   so flipping the switch re-renders what is already on screen.
+
+   **Live ports are not project ports** (D29). `--scpi-port` / `--device-port` override the
+   project file, so the ports the process bound are frequently not the ones in it. The app hands
+   the bound `SocketAddr`s to the window at launch; they are read-only "实际监听端口" in the
+   title bar, the I/O card and the status bar, while the editable fields are labelled
+   "项目端口（需重启）" and the card says so when the two disagree. Rebinding a live listener
+   from the window was rejected: a UTS mid-session would lose its socket.
+
+   **The CJK font is embedded** (D30). egui's built-in fonts have no Chinese glyphs, and a
+   Windows test cell is not a place to discover a missing system font, so `quickvib-ui/assets`
+   carries a Noto Sans SC subset — SIL OFL 1.1, weight-instanced and cut to GB2312 level 1 plus
+   the symbols the window draws, regenerated by `build-font.py`. It is a data file included with
+   `include_bytes!` behind the `gui` feature, not a dependency, so D18 is untouched. A test walks
+   every label in both languages against the font's `cmap`, so a string the subset cannot draw
+   fails CI rather than showing boxes on the bench.
 
 A reasonable first PR is Phases 0–2: self-contained, and it gives reviewers the crate boundaries, the
 data model, and the math before any protocol code lands. Phases 3–5 are the natural second PR, at
@@ -1438,11 +1480,16 @@ Explicitly **not** built, by requirement:
   not from faking the library. (Committing `bindgen`-generated *declarations* is not a fake DLL:
   it is reviewed source describing an interface, with no implementation behind it.)
 
-**The GUI is now in scope** (§19, Phase 8): a desktop window for editing the project — device setup
-(sample rate, `lpfHz`, `highPassHz`, the three measuring ranges), recording, export, identity and
-`server.scpiPort` — plus load/save and a run button. It is a *front end over the same
-`quickvib-project` schema and the same engine*; it adds no behaviour the SCPI surface does not
-already have, and `--headless` remains the UTS path.
+**The GUI is now in scope** (§19, Phase 8): a Chinese-language operator panel for editing the
+project — device setup (sample rate, `lpfHz`, `highPassHz`, the three measuring ranges), recording,
+export, identity and `server.scpiPort` — plus load/save and a run button. It is a *front end over
+the same `quickvib-project` schema and the same engine*; it adds no behaviour the SCPI surface does
+not already have, and `--headless` remains the UTS path.
+
+What the window is deliberately **not**: a second place where validation rules live, a way to
+rebind a listening socket out from under a connected UTS (D29), or a localisation framework — one
+label table with two columns is the whole of it (D28), and a third language would be a third
+column, not a resource-loading system.
 
 Also out of scope for v1: real-time plotting, FFT/spectral analysis, multi-channel capture,
 VISA/HiSLIP/VXI-11 transports (raw socket only), USBTMC, triggering beyond immediate `INIT`, any
