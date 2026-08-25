@@ -117,6 +117,9 @@ fn lex_arguments(text: &str) -> Result<Vec<Argument>, ParseError> {
     let mut current = String::new();
     let mut quote: Option<char> = None;
     let mut quoted_argument = false;
+    // Set while sitting between a closing quote and the comma that ends the argument: only
+    // whitespace may follow, so `"a"x` and `"a" "b"` are malformed rather than concatenated.
+    let mut after_quote = false;
     let mut chars = text.chars().peekable();
 
     while let Some(c) = chars.next() {
@@ -128,11 +131,32 @@ fn lex_arguments(text: &str) -> Result<Vec<Argument>, ParseError> {
                     chars.next();
                 } else {
                     quote = None;
+                    after_quote = true;
                 }
             }
             Some(_) => current.push(c),
+            None if after_quote => match c {
+                ',' => {
+                    arguments.push(finish_argument(&current, quoted_argument)?);
+                    current.clear();
+                    quoted_argument = false;
+                    after_quote = false;
+                }
+                _ if c.is_whitespace() => {}
+                _ => {
+                    return Err(ParseError::command(
+                        "trailing characters after a quoted string",
+                    ))
+                }
+            },
             None => match c {
                 '"' | '\'' => {
+                    if !current.trim().is_empty() {
+                        return Err(ParseError::command(
+                            "a quoted string must be the whole argument",
+                        ));
+                    }
+                    current.clear();
                     quote = Some(c);
                     quoted_argument = true;
                 }
@@ -273,6 +297,35 @@ mod tests {
                 "expected failure for {message:?}"
             );
         }
+    }
+
+    #[test]
+    fn characters_after_a_closing_quote_are_rejected() {
+        for message in [
+            r#"MMEM:LOAD:STAT "a"x"#,
+            r#"MMEM:LOAD:STAT "a" "b""#,
+            r#"MMEM:LOAD:STAT "a"'b'"#,
+            r#"MMEM:LOAD:STAT x"a""#,
+        ] {
+            let err = lex_message(message).unwrap_err();
+            assert_eq!(
+                err.scpi_error(),
+                quickvib_core::ScpiError::CommandError,
+                "{message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn whitespace_and_commas_may_follow_a_closing_quote() {
+        let m = lex_message(r#"MMEM:STOR:TRAC "a.csv" , "b.csv"  "#).unwrap();
+        assert_eq!(
+            m.arguments,
+            vec![
+                Argument::Quoted("a.csv".to_owned()),
+                Argument::Quoted("b.csv".to_owned()),
+            ]
+        );
     }
 
     #[test]

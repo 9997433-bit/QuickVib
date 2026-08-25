@@ -90,7 +90,10 @@ impl SampleChannel {
         self.lock().connected
     }
 
-    /// Samples accepted since startup, dropped ones excluded.
+    /// Samples handed to the channel since startup, counted on arrival.
+    ///
+    /// Includes samples that the same or a later batch went on to drop, so
+    /// `received() - dropped()` is what actually made it through.
     #[must_use]
     pub fn received(&self) -> u64 {
         self.received.load(Ordering::Relaxed)

@@ -13,7 +13,6 @@ use quickvib_core::{ScpiError, ScpiErrorEntry};
 #[derive(Debug, Default)]
 pub struct ErrorQueue {
     entries: VecDeque<ScpiErrorEntry>,
-    overflowed: bool,
 }
 
 impl ErrorQueue {
@@ -24,14 +23,17 @@ impl ErrorQueue {
     }
 
     /// Push an error, collapsing to `-350` once the queue is full.
+    ///
+    /// The marker is decided from the queue's own tail rather than from a sticky flag: after a
+    /// partial drain has made room, a fresh overflow has to raise a fresh `-350`, otherwise the
+    /// newest entry the UTS reads would be a plain error while later ones were silently lost.
     pub fn push(&mut self, entry: impl Into<ScpiErrorEntry>) {
         let entry = entry.into();
         if self.entries.len() < ERROR_QUEUE_DEPTH {
             self.entries.push_back(entry);
             return;
         }
-        if !self.overflowed {
-            self.overflowed = true;
+        if self.entries.back().map(|e| e.error) != Some(ScpiError::QueueOverflow) {
             self.entries.pop_back();
             self.entries
                 .push_back(ScpiErrorEntry::new(ScpiError::QueueOverflow));
@@ -40,24 +42,14 @@ impl ErrorQueue {
 
     /// Pop the oldest error, or [`ScpiError::NoError`] when the queue is empty.
     pub fn pop(&mut self) -> ScpiErrorEntry {
-        match self.entries.pop_front() {
-            Some(entry) => {
-                if self.entries.is_empty() {
-                    self.overflowed = false;
-                }
-                entry
-            }
-            None => {
-                self.overflowed = false;
-                ScpiErrorEntry::new(ScpiError::NoError)
-            }
-        }
+        self.entries
+            .pop_front()
+            .unwrap_or_else(|| ScpiErrorEntry::new(ScpiError::NoError))
     }
 
     /// Discard every pending error. This is what `*CLS` does.
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.overflowed = false;
     }
 
     /// How many errors are pending.
@@ -123,6 +115,56 @@ mod tests {
         }
         assert_eq!(queue.pop().error, ScpiError::QueueOverflow);
         assert_eq!(queue.pop().error, ScpiError::NoError);
+    }
+
+    #[test]
+    fn a_second_overflow_after_a_partial_drain_is_marked_again() {
+        // SCPI-99 wants the newest readable entry to be -350 whenever errors were lost. A
+        // drain that only makes room for one more error must not hide the next loss.
+        let mut queue = ErrorQueue::new();
+        for _ in 0..ERROR_QUEUE_DEPTH {
+            queue.push(ScpiError::CommandError);
+        }
+        queue.push(ScpiError::UndefinedHeader);
+        assert_eq!(queue.pop().error, ScpiError::CommandError);
+
+        queue.push(ScpiError::DataOutOfRange);
+        queue.push(ScpiError::IllegalParameterValue);
+
+        let mut drained = Vec::new();
+        while !queue.is_empty() {
+            drained.push(queue.pop().error);
+        }
+        assert_eq!(drained.last(), Some(&ScpiError::QueueOverflow));
+        assert_eq!(
+            drained
+                .iter()
+                .filter(|e| **e == ScpiError::QueueOverflow)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn consecutive_overflows_share_one_marker() {
+        // Once the tail is already -350 there is nothing left to retag, so a burst of lost
+        // errors costs one slot, not one per error.
+        let mut queue = ErrorQueue::new();
+        for _ in 0..ERROR_QUEUE_DEPTH + 10 {
+            queue.push(ScpiError::CommandError);
+        }
+        let mut drained = Vec::new();
+        while !queue.is_empty() {
+            drained.push(queue.pop().error);
+        }
+        assert_eq!(drained.len(), ERROR_QUEUE_DEPTH);
+        assert_eq!(
+            drained
+                .iter()
+                .filter(|e| **e == ScpiError::QueueOverflow)
+                .count(),
+            1
+        );
     }
 
     #[test]

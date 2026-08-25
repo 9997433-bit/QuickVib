@@ -17,6 +17,9 @@ use crate::backend::{
 };
 use crate::error::DeviceError;
 
+/// The longest a paced stream stays asleep before it looks at cancellation again.
+const PACE_SLICE: Duration = Duration::from_millis(10);
+
 /// One sine component of the synthesized signal.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SignalComponent {
@@ -160,6 +163,27 @@ impl MockBackend {
         }
     }
 
+    /// Wait out one batch's worth of time, in slices short enough that `ABOR` and the run
+    /// watchdog are answered promptly rather than after a whole batch.
+    ///
+    /// The wait is driven by the injected clock instead of `CancelToken::wait_timeout` so a
+    /// [`quickvib_core::TestClock`] still books the virtual time a paced run is meant to take;
+    /// under the system clock the slice length caps how long a cancellation goes unnoticed.
+    /// Returns `true` when the wait was cut short.
+    fn pace_batch(&self, batch: Duration, cancel: &CancelToken) -> bool {
+        let deadline = self.clock.monotonic() + batch;
+        loop {
+            if cancel.is_cancelled() || self.stopped.load(Ordering::Acquire) {
+                return true;
+            }
+            let remaining = deadline.saturating_sub(self.clock.monotonic());
+            if remaining.is_zero() {
+                return false;
+            }
+            self.clock.sleep(remaining.min(PACE_SLICE));
+        }
+    }
+
     /// Generate `count` samples starting at sample index `start`, appending to `out`.
     fn generate(&self, start: u64, count: usize, rng: &mut Xoshiro256PlusPlus, out: &mut Vec<f32>) {
         out.clear();
@@ -262,9 +286,10 @@ impl DeviceBackend for MockBackend {
             self.generate(delivered, batch_len, &mut rng, &mut buffer);
 
             if self.pace && self.sample_rate_hz > 0.0 {
-                self.clock.sleep(Duration::from_secs_f64(
-                    batch_len as f64 / self.sample_rate_hz,
-                ));
+                let batch = Duration::from_secs_f64(batch_len as f64 / self.sample_rate_hz);
+                if self.pace_batch(batch, cancel) {
+                    return Ok(StreamOutcome::Cancelled);
+                }
             }
 
             on_batch(SampleBatch {
@@ -361,7 +386,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use quickvib_core::TestClock;
+    use quickvib_core::{SystemClock, TestClock};
 
     fn clock() -> Arc<dyn Clock> {
         Arc::new(TestClock::at_epoch())
@@ -699,6 +724,89 @@ mod tests {
             .unwrap();
         // 5000 samples at 1 kS/s is nominally five seconds of virtual time and no real time.
         assert_eq!(clock.monotonic(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn cancellation_interrupts_a_paced_batch() {
+        // 100 samples at 10 S/s is one ten-second batch: before pacing became interruptible
+        // this call slept the whole ten seconds and then reported `Completed`.
+        let clock = Arc::new(SystemClock::new());
+        let mut backend = MockBackend::new(Arc::clone(&clock) as Arc<dyn Clock>).with_pacing(true);
+        backend
+            .open(&DeviceOpenOptions::new(10.0, SampleUnit::VelocityUmPerSec))
+            .unwrap();
+
+        let cancel = CancelToken::new();
+        let token = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            token.cancel();
+        });
+
+        let request = StreamRequest::new(100, SampleUnit::VelocityUmPerSec, 10.0);
+        let started = clock.monotonic();
+        let mut delivered = 0usize;
+        let outcome = backend
+            .stream(
+                &request,
+                &mut |batch| {
+                    delivered += batch.samples.len();
+                    Ok(())
+                },
+                &cancel,
+            )
+            .unwrap();
+        let elapsed = clock.monotonic() - started;
+
+        assert_eq!(outcome, StreamOutcome::Cancelled);
+        assert_eq!(delivered, 0);
+        assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+    }
+
+    #[test]
+    fn stop_interrupts_a_paced_batch() {
+        let clock = Arc::new(SystemClock::new());
+        let mut backend = MockBackend::new(Arc::clone(&clock) as Arc<dyn Clock>).with_pacing(true);
+        backend
+            .open(&DeviceOpenOptions::new(10.0, SampleUnit::VelocityUmPerSec))
+            .unwrap();
+
+        let stopped = Arc::clone(&backend.stopped);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            stopped.store(true, Ordering::Release);
+        });
+
+        let request = StreamRequest::new(100, SampleUnit::VelocityUmPerSec, 10.0);
+        let started = clock.monotonic();
+        let outcome = backend
+            .stream(&request, &mut |_| Ok(()), &CancelToken::new())
+            .unwrap();
+        let elapsed = clock.monotonic() - started;
+
+        assert_eq!(outcome, StreamOutcome::Cancelled);
+        assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+    }
+
+    #[test]
+    fn pacing_still_takes_real_time_on_the_system_clock() {
+        // Slicing the wait must not turn pacing into a no-op: 200 samples at 1 kS/s is 200 ms.
+        let clock = Arc::new(SystemClock::new());
+        let mut backend = MockBackend::new(Arc::clone(&clock) as Arc<dyn Clock>).with_pacing(true);
+        backend
+            .open(&DeviceOpenOptions::new(
+                1000.0,
+                SampleUnit::VelocityUmPerSec,
+            ))
+            .unwrap();
+        let request = StreamRequest::new(200, SampleUnit::VelocityUmPerSec, 1000.0);
+        let started = clock.monotonic();
+        let outcome = backend
+            .stream(&request, &mut |_| Ok(()), &CancelToken::new())
+            .unwrap();
+        let elapsed = clock.monotonic() - started;
+        assert_eq!(outcome, StreamOutcome::Completed);
+        assert!(elapsed >= Duration::from_millis(150), "took {elapsed:?}");
     }
 
     #[test]

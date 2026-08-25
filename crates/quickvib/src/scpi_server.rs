@@ -278,6 +278,14 @@ fn session_loop(
                 );
                 continue;
             }
+            Ok(ReadOutcome::Unterminated) => {
+                // IEEE 488.2 wants a terminator, so the fragment is not executed; the peer is
+                // already gone, so there is nothing left to serve after recording the error.
+                engine.push_error(
+                    ScpiError::CommandError.detail("line not terminated before EOF"),
+                );
+                return;
+            }
             Err(_) => return,
         }
 
@@ -311,6 +319,8 @@ enum ReadOutcome {
     Eof,
     /// The line ran past [`MAX_LINE_BYTES`] and was discarded up to its terminator.
     TooLong,
+    /// The peer closed part-way through a line, so the fragment has no terminator.
+    Unterminated,
 }
 
 /// Read one `\n`-terminated line, refusing to buffer more than [`MAX_LINE_BYTES`].
@@ -330,11 +340,16 @@ fn read_line_capped<R: BufRead>(
     if read == 0 {
         return Ok(ReadOutcome::Eof);
     }
-    if line.len() > MAX_LINE_BYTES || !line.ends_with(b"\n") {
-        // Only an over-long line can be unterminated here: a clean close yields `read == 0`.
-        if !line.ends_with(b"\n") {
+    if !line.ends_with(b"\n") {
+        // Two ways to end up here: the line outran the cap, or the peer closed mid-line. Only
+        // the first has more of the same line still coming.
+        if line.len() > MAX_LINE_BYTES {
             discard_to_terminator(reader)?;
+            return Ok(ReadOutcome::TooLong);
         }
+        return Ok(ReadOutcome::Unterminated);
+    }
+    if line.len() > MAX_LINE_BYTES {
         return Ok(ReadOutcome::TooLong);
     }
     Ok(ReadOutcome::Line)
@@ -406,6 +421,28 @@ mod tests {
             Ok(ReadOutcome::Line)
         ));
         assert_eq!(line, b"*IDN?\n");
+    }
+
+    #[test]
+    fn a_line_cut_short_by_eof_is_not_reported_as_over_long() {
+        let mut reader = BufReader::new(Cursor::new(b"*IDN?".to_vec()));
+        let mut line = Vec::new();
+        assert!(matches!(
+            read_line_capped(&mut reader, &mut line),
+            Ok(ReadOutcome::Unterminated)
+        ));
+        assert_eq!(line, b"*IDN?");
+    }
+
+    #[test]
+    fn an_over_long_line_cut_short_by_eof_is_still_over_long() {
+        let input = vec![b'A'; MAX_LINE_BYTES + 10];
+        let mut reader = BufReader::new(Cursor::new(input));
+        let mut line = Vec::new();
+        assert!(matches!(
+            read_line_capped(&mut reader, &mut line),
+            Ok(ReadOutcome::TooLong)
+        ));
     }
 
     #[test]
