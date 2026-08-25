@@ -9,13 +9,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use quickvib_core::{BackendKind, CancelToken, Clock, Level, Logger, SystemClock};
-use quickvib_device::DeviceBackend;
+use quickvib_device::{ConnectionState, DeviceBackend};
 use quickvib_engine::{Engine, EngineConfig};
 use quickvib_project::{LastProjectStore, Project, ProjectStore};
 
 use crate::backend_factory::{self, BackendError};
 use crate::cli::{Options, DEFAULT_DEVICE_PORT};
-use crate::device_server::DeviceServer;
+use crate::device_server::{DeviceServer, LinkStats};
 use crate::log::LineLogger;
 use crate::scpi_server::ScpiServer;
 
@@ -301,7 +301,12 @@ fn resolve_project(
         })?;
         if let Some(store) = last_project {
             if let Err(e) = store.record(path) {
-                log(logger, Level::Warn, "proj", format!("could not record: {e}"));
+                log(
+                    logger,
+                    Level::Warn,
+                    "proj",
+                    format!("could not record: {e}"),
+                );
             }
         }
         log(
@@ -317,7 +322,10 @@ fn resolve_project(
         return Ok(None);
     }
 
-    let Some(path) = last_project.as_ref().and_then(LastProjectStore::read_existing) else {
+    let Some(path) = last_project
+        .as_ref()
+        .and_then(LastProjectStore::read_existing)
+    else {
         log(logger, Level::Info, "proj", "no project loaded at startup");
         return Ok(None);
     };
@@ -329,11 +337,7 @@ fn resolve_project(
                 logger,
                 Level::Info,
                 "proj",
-                format!(
-                    "auto-loaded path={} name={}",
-                    path.display(),
-                    project.name
-                ),
+                format!("auto-loaded path={} name={}", path.display(), project.name),
             );
             Ok(Some(project))
         }
@@ -406,6 +410,18 @@ impl App {
         self.cancel.clone()
     }
 
+    /// Counters for the device link: connections, refusals and framed samples.
+    #[must_use]
+    pub fn link_stats(&self) -> Arc<LinkStats> {
+        self.device.stats()
+    }
+
+    /// The observable state of the device link.
+    #[must_use]
+    pub fn link_state(&self) -> Arc<ConnectionState> {
+        self.device.state()
+    }
+
     /// The one-line startup banner, printed on the console unless `--headless`.
     ///
     /// # Errors
@@ -456,6 +472,8 @@ impl App {
     pub fn spawn(self) -> AppHandle {
         let cancel = self.cancel.clone();
         let engine = Arc::clone(&self.engine);
+        let link_stats = self.link_stats();
+        let link_state = self.link_state();
         let scpi_addr = self.scpi_addr().ok();
         let device_addr = self.device_addr().ok();
         let join = std::thread::Builder::new()
@@ -466,6 +484,8 @@ impl App {
         AppHandle {
             cancel,
             engine,
+            link_stats,
+            link_state,
             scpi_addr,
             device_addr,
             join,
@@ -478,6 +498,8 @@ impl App {
 pub struct AppHandle {
     cancel: CancelToken,
     engine: Arc<Engine>,
+    link_stats: Arc<LinkStats>,
+    link_state: Arc<ConnectionState>,
     scpi_addr: Option<std::net::SocketAddr>,
     device_addr: Option<std::net::SocketAddr>,
     join: Option<std::thread::JoinHandle<()>>,
@@ -488,6 +510,18 @@ impl AppHandle {
     #[must_use]
     pub fn engine(&self) -> &Arc<Engine> {
         &self.engine
+    }
+
+    /// Counters for the device link.
+    #[must_use]
+    pub fn link_stats(&self) -> &Arc<LinkStats> {
+        &self.link_stats
+    }
+
+    /// The observable state of the device link.
+    #[must_use]
+    pub fn link_state(&self) -> &Arc<ConnectionState> {
+        &self.link_state
     }
 
     /// The address the SCPI server is listening on.

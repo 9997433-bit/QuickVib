@@ -86,7 +86,11 @@ impl fmt::Display for CliError {
                 write!(f, "unexpected argument '{value}'")
             }
             Self::MissingValue(flag) => write!(f, "option '{flag}' requires a value"),
-            Self::BadValue { flag, value, reason } => {
+            Self::BadValue {
+                flag,
+                value,
+                reason,
+            } => {
                 write!(f, "invalid value '{value}' for '{flag}': {reason}")
             }
         }
@@ -149,7 +153,9 @@ pub fn parse(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
 
         if raw == "--" {
             if let Some(extra) = arguments.get(index) {
-                return Err(CliError::UnexpectedPositional(extra.to_string_lossy().into()));
+                return Err(CliError::UnexpectedPositional(
+                    extra.to_string_lossy().into(),
+                ));
             }
             break;
         }
@@ -194,12 +200,11 @@ pub fn parse(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
             "--log-level" => {
                 let value = take_value("--log-level", inline, arguments, &mut index)?;
                 let text = value.to_string_lossy();
-                options.log_level =
-                    Level::parse(&text).ok_or_else(|| CliError::BadValue {
-                        flag: "--log-level",
-                        value: text.clone().into_owned(),
-                        reason: "expected trace|debug|info|warn|error".to_owned(),
-                    })?;
+                options.log_level = Level::parse(&text).ok_or_else(|| CliError::BadValue {
+                    flag: "--log-level",
+                    value: text.clone().into_owned(),
+                    reason: "expected trace|debug|info|warn|error".to_owned(),
+                })?;
             }
             other => return Err(CliError::UnknownFlag(other.to_owned())),
         }
@@ -232,7 +237,11 @@ fn reject_inline(
 ) -> Result<(), CliError> {
     if let Some(value) = inline {
         return Err(CliError::BadValue {
-            flag: if flag == "--headless" { "--headless" } else { "--no-auto-load" },
+            flag: if flag == "--headless" {
+                "--headless"
+            } else {
+                "--no-auto-load"
+            },
             value: value.to_string_lossy().into_owned(),
             reason: "this flag takes no value".to_owned(),
         });
@@ -327,7 +336,10 @@ mod tests {
 
     #[test]
     fn inline_and_separated_values_are_equivalent() {
-        assert_eq!(options(&["--scpi-port=6000"]), options(&["--scpi-port", "6000"]));
+        assert_eq!(
+            options(&["--scpi-port=6000"]),
+            options(&["--scpi-port", "6000"])
+        );
         assert_eq!(
             options(&["--project=/tmp/a.proj"]),
             options(&["--project", "/tmp/a.proj"])
@@ -336,8 +348,14 @@ mod tests {
 
     #[test]
     fn backend_override_parses() {
-        assert_eq!(options(&["--backend", "mock"]).backend, Some(BackendKind::Mock));
-        assert_eq!(options(&["--backend=m300"]).backend, Some(BackendKind::M300));
+        assert_eq!(
+            options(&["--backend", "mock"]).backend,
+            Some(BackendKind::Mock)
+        );
+        assert_eq!(
+            options(&["--backend=m300"]).backend,
+            Some(BackendKind::M300)
+        );
     }
 
     #[test]
@@ -392,8 +410,13 @@ mod tests {
 
     #[test]
     fn missing_values_are_rejected() {
-        for flag in ["--project", "--scpi-port", "--device-port", "--backend", "--log-level"]
-        {
+        for flag in [
+            "--project",
+            "--scpi-port",
+            "--device-port",
+            "--backend",
+            "--log-level",
+        ] {
             assert!(
                 matches!(parse(&args(&[flag])), Err(CliError::MissingValue(_))),
                 "for {flag}"
@@ -450,7 +473,7 @@ mod tests {
 
     #[test]
     fn a_bare_double_dash_terminates_parsing() {
-        assert_eq!(options(&["--headless", "--"]).headless, true);
+        assert!(options(&["--headless", "--"]).headless);
     }
 
     #[test]

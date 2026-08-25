@@ -62,6 +62,10 @@ struct EngineState {
     cancel: CancelToken,
     watchdog: Duration,
     any_run_started: bool,
+    /// Set while the end-of-run notification is being delivered. Blocking queries treat it
+    /// as "still busy" so a client using both `#REC:DONE` and `REC:WAIT?` never sees them
+    /// out of order, without the engine lock being held across a socket write.
+    notifying: bool,
 }
 
 /// The shared instrument model. One per process; every SCPI session talks to the same one
@@ -112,6 +116,7 @@ impl Engine {
                 cancel: CancelToken::new(),
                 watchdog: Duration::from_secs(1),
                 any_run_started: false,
+                notifying: false,
             }),
             changed: Condvar::new(),
             clock: config.clock,
@@ -481,6 +486,7 @@ impl Engine {
         guard.outcome = None;
         guard.abort_reason = None;
         guard.any_run_started = false;
+        guard.notifying = false;
         guard.errors.clear();
         guard.opc = Opc::new();
         guard.state = transition(guard.state, Event::Reset).unwrap_or(State::Idle);
@@ -502,7 +508,9 @@ impl Engine {
         let bound = guard.watchdog + Duration::from_secs(1);
         let (guard, _) = self
             .changed
-            .wait_timeout_while(guard, bound, |s| s.opc.is_operation_in_progress())
+            .wait_timeout_while(guard, bound, |s| {
+                s.opc.is_operation_in_progress() || s.notifying
+            })
             .unwrap_or_else(PoisonError::into_inner);
         drop(guard);
     }
@@ -520,7 +528,7 @@ impl Engine {
         let bound = guard.watchdog + Duration::from_secs(1);
         let (guard, _) = self
             .changed
-            .wait_timeout_while(guard, bound, |s| s.state.is_running())
+            .wait_timeout_while(guard, bound, |s| s.state.is_running() || s.notifying)
             .unwrap_or_else(PoisonError::into_inner);
         guard.state == State::Complete
     }
@@ -631,6 +639,7 @@ impl Engine {
             guard.outcome = None;
             guard.abort_reason = None;
             guard.any_run_started = true;
+            guard.notifying = false;
             guard.cancel = CancelToken::new();
             guard.watchdog = project.watchdog_timeout(duration);
             guard.opc.begin_operation();
@@ -875,6 +884,7 @@ impl Engine {
             } else {
                 NOTIFY_RECORD_ABORTED
             };
+            guard.notifying = true;
             let cancel = guard.cancel.clone();
             drop(guard);
             // Release the watchdog thread, which is parked on this token.
@@ -882,9 +892,14 @@ impl Engine {
             (notification, summary)
         };
 
+        // The notification goes out *before* the blocked `REC:WAIT?` and `*OPC?` queries are
+        // released, so a UTS that uses both never sees them out of order. The `notifying`
+        // flag — not the engine lock — is what holds those queries back, so a slow
+        // notification consumer cannot stall the state machine.
+        self.broadcast(notification);
+        self.lock().notifying = false;
         self.changed.notify_all();
         self.log(Level::Info, "rec", summary);
-        self.broadcast(notification);
     }
 }
 

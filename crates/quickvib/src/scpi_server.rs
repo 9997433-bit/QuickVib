@@ -171,7 +171,10 @@ impl ScpiServer {
 
         if spawned.is_err() {
             self.live_sessions.fetch_sub(1, Ordering::AcqRel);
-            self.log(Level::Error, format!("could not spawn a session for {peer}"));
+            self.log(
+                Level::Error,
+                format!("could not spawn a session for {peer}"),
+            );
         }
     }
 }
@@ -247,7 +250,10 @@ fn serve_session(
         logger.log(Level::Info, "scpi", &format!("session closed peer={peer}"));
     }
 
-    let guard = session.writer.lock().unwrap_or_else(PoisonError::into_inner);
+    let guard = session
+        .writer
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let _ = guard.shutdown(Shutdown::Both);
 }
 

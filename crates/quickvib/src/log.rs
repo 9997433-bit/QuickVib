@@ -20,7 +20,9 @@ pub struct LineLogger {
 
 impl std::fmt::Debug for LineLogger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LineLogger").field("minimum", &self.minimum).finish()
+        f.debug_struct("LineLogger")
+            .field("minimum", &self.minimum)
+            .finish()
     }
 }
 
@@ -44,18 +46,21 @@ impl LineLogger {
         out: Box<dyn Write + Send>,
         err: Box<dyn Write + Send>,
     ) -> Self {
-        Self { minimum, clock, out: Mutex::new(out), err: Mutex::new(err) }
+        Self {
+            minimum,
+            clock,
+            out: Mutex::new(out),
+            err: Mutex::new(err),
+        }
     }
 
     /// Format one record exactly as it is written.
     #[must_use]
-    pub fn format_record(
-        timestamp: &str,
-        level: Level,
-        component: &str,
-        message: &str,
-    ) -> String {
-        format!("{timestamp} {:<5} {component:<7} {message}\n", level.as_str())
+    pub fn format_record(timestamp: &str, level: Level, component: &str, message: &str) -> String {
+        format!(
+            "{timestamp} {:<5} {component:<7} {message}\n",
+            level.as_str()
+        )
     }
 }
 
@@ -70,7 +75,11 @@ impl Logger for LineLogger {
             component,
             message,
         );
-        let sink = if level.is_diagnostic() { &self.err } else { &self.out };
+        let sink = if level.is_diagnostic() {
+            &self.err
+        } else {
+            &self.out
+        };
         let mut guard = sink.lock().unwrap_or_else(PoisonError::into_inner);
         // A logger that cannot write must not take the instrument down with it.
         let _ = guard.write_all(line.as_bytes());
@@ -131,12 +140,8 @@ mod tests {
         clock.advance(Duration::from_millis(1_767_225_600_123));
         let out = CaptureWriter::new();
         let err = CaptureWriter::new();
-        let logger = LineLogger::with_writers(
-            minimum,
-            clock,
-            Box::new(out.clone()),
-            Box::new(err.clone()),
-        );
+        let logger =
+            LineLogger::with_writers(minimum, clock, Box::new(out.clone()), Box::new(err.clone()));
         (logger, out, err)
     }
 
@@ -144,7 +149,10 @@ mod tests {
     fn the_line_format_matches_the_reference() {
         let (logger, out, _) = logger(Level::Info);
         logger.log(Level::Info, "scpi", "listening port=5025");
-        assert_eq!(out.lines(), vec!["2026-01-01T00:00:00.123Z INFO  scpi    listening port=5025"]);
+        assert_eq!(
+            out.lines(),
+            vec!["2026-01-01T00:00:00.123Z INFO  scpi    listening port=5025"]
+        );
     }
 
     #[test]
