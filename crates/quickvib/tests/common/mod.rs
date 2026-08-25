@@ -14,10 +14,10 @@ use std::time::Duration;
 
 use quickvib::cli::Options;
 use quickvib::{AppBuilder, AppHandle};
-use quickvib_core::{Clock, Level, NullLogger, SystemClock, TestClock};
+use quickvib_core::{BackendKind, Clock, Level, NullLogger, SystemClock, TestClock};
 use quickvib_device::{DeviceBackend, DeviceOpenOptions, MockBackend, MockFault};
 use quickvib_project::LastProjectStore;
-use quickvib_testkit::{FakeDevice, ScpiClient};
+use quickvib_testkit::{FakeDevice, ScpiClient, StreamingDevice};
 use tempfile::TempDir;
 
 /// How long a test will wait for something a concurrent thread has to do.
@@ -63,6 +63,7 @@ pub struct HarnessBuilder {
     project_json: String,
     clock: Arc<dyn Clock>,
     backend: Option<Box<dyn DeviceBackend + Send>>,
+    backend_kind: Option<BackendKind>,
     max_sessions: Option<usize>,
     fault_injection: bool,
     auto_load: bool,
@@ -76,6 +77,7 @@ impl Default for HarnessBuilder {
             // A virtual clock is what lets a paced capture finish instantly (D20).
             clock: Arc::new(TestClock::at_epoch()),
             backend: None,
+            backend_kind: None,
             max_sessions: None,
             fault_injection: false,
             auto_load: false,
@@ -106,6 +108,12 @@ impl HarnessBuilder {
     /// Substitute a backend, typically one carrying an injected fault.
     pub fn backend(mut self, backend: Box<dyn DeviceBackend + Send>) -> Self {
         self.backend = Some(backend);
+        self
+    }
+
+    /// Override the backend the way `--backend <kind>` does on the command line.
+    pub fn backend_kind(mut self, kind: BackendKind) -> Self {
+        self.backend_kind = Some(kind);
         self
     }
 
@@ -144,7 +152,7 @@ impl HarnessBuilder {
             scpi_port: 0,
             device_port: Some(0),
             headless: true,
-            backend: None,
+            backend: self.backend_kind,
             no_auto_load: !self.auto_load,
             log_level: Level::Info,
         };
@@ -199,6 +207,22 @@ impl Harness {
     /// Dial into the device port as an M300 would.
     pub fn device(&self) -> FakeDevice {
         FakeDevice::connect(self.handle.device_addr()).expect("the device port must be open")
+    }
+
+    /// Dial in and keep streaming, as a powered-on M300 — or `m300-sim` — does.
+    pub fn streaming_device(
+        &self,
+        sample_rate_hz: f64,
+        amplitude: f64,
+        frequency_hz: f64,
+    ) -> StreamingDevice {
+        StreamingDevice::connect(
+            self.handle.device_addr(),
+            sample_rate_hz,
+            amplitude,
+            frequency_hz,
+        )
+        .expect("the device port must be open")
     }
 
     /// A path inside the scratch directory.

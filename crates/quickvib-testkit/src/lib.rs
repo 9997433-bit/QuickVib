@@ -4,7 +4,8 @@
 //! would — a TCP socket, ASCII lines, `\n` terminators — so the helpers here are deliberately
 //! thin: a line-oriented SCPI client that knows how to tell an out-of-band `#`-prefixed
 //! notification from a response, and a stand-in for the M300 that dials into the device port
-//! and pushes little-endian `f32` bytes.
+//! and pushes little-endian `f32` bytes — either one burst at a time ([`FakeDevice`]) or
+//! continuously, the way a powered-on instrument does ([`StreamingDevice`]).
 //!
 //! Nothing in this crate is used by the shipped binary; it exists so the same helpers are
 //! shared by every test file rather than copy-pasted (`docs/PLAN.md` 17.2).
@@ -14,6 +15,8 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Default socket timeout. Long enough that a loaded CI runner never trips it, short enough
@@ -312,6 +315,99 @@ impl FakeDevice {
     /// Disconnect, as a device does when it is unplugged.
     pub fn disconnect(self) {
         let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+/// How often [`StreamingDevice`] wakes to push its next chunk.
+const STREAM_INTERVAL: Duration = Duration::from_millis(5);
+
+/// A [`FakeDevice`] that keeps pushing on its own thread, the way a powered-on instrument does.
+///
+/// The `tcp` backend records whatever is arriving *when the run starts*, so a test that pushes a
+/// fixed burst before `INIT` would be testing the wrong thing. This streams continuously
+/// instead, which is also what `m300-sim` does.
+#[derive(Debug)]
+pub struct StreamingDevice {
+    shutdown: TcpStream,
+    stop: Arc<AtomicBool>,
+    sent: Arc<AtomicU64>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl StreamingDevice {
+    /// Dial in and start pushing a sine of `amplitude` at `frequency_hz`, paced at
+    /// `sample_rate_hz`.
+    ///
+    /// # Errors
+    /// Any connect or socket-option failure.
+    pub fn connect(
+        addr: impl ToSocketAddrs,
+        sample_rate_hz: f64,
+        amplitude: f64,
+        frequency_hz: f64,
+    ) -> std::io::Result<Self> {
+        let mut device = FakeDevice::connect(addr)?;
+        let shutdown = device.stream.try_clone()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let sent = Arc::new(AtomicU64::new(0));
+
+        let chunk =
+            ((sample_rate_hz * STREAM_INTERVAL.as_secs_f64()).round() as usize).clamp(1, 4096);
+        let running = Arc::clone(&stop);
+        let counter = Arc::clone(&sent);
+        let join = std::thread::Builder::new()
+            .name("testkit-streaming-device".to_owned())
+            .spawn(move || {
+                let mut index: u64 = 0;
+                let mut buffer = vec![0.0_f32; chunk];
+                while !running.load(Ordering::Acquire) {
+                    for (offset, slot) in buffer.iter_mut().enumerate() {
+                        let t = (index + offset as u64) as f64 / sample_rate_hz;
+                        *slot =
+                            (amplitude * (std::f64::consts::TAU * frequency_hz * t).sin()) as f32;
+                    }
+                    if device.push(&buffer).is_err() {
+                        break;
+                    }
+                    index += chunk as u64;
+                    counter.store(index, Ordering::Release);
+                    std::thread::sleep(STREAM_INTERVAL);
+                }
+            })?;
+
+        Ok(Self {
+            shutdown,
+            stop,
+            sent,
+            join: Some(join),
+        })
+    }
+
+    /// Samples handed to the socket so far.
+    #[must_use]
+    pub fn samples_sent(&self) -> u64 {
+        self.sent.load(Ordering::Acquire)
+    }
+
+    /// Stop pushing and close the link, as a device does when it is unplugged.
+    pub fn disconnect(mut self) {
+        self.halt();
+    }
+
+    fn halt(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.shutdown.shutdown(Shutdown::Both);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+impl Drop for StreamingDevice {
+    fn drop(&mut self) {
+        // A test that forgets to disconnect must not leave a thread writing to a socket for
+        // the rest of the process.
+        self.halt();
     }
 }
 
