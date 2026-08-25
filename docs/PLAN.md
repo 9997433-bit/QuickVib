@@ -337,11 +337,15 @@ quickvib/
     │       ├── lib.rs                # DeviceBackend trait, SampleBatch, DeviceCapabilities (§10)
     │       ├── framer.rs             # LE f32 framing over `impl Read` (D5)
     │       ├── listener.rs           # inbound TCP accept, loopback-testable
+    │       ├── sink.rs               # SampleSink + bounded SampleChannel (listener -> backend)
+    │       ├── stream.rs             # StreamBackend: records the inbound link (§7.4)
     │       └── mock.rs               # deterministic seeded signal generator + fault injection
     ├── quickvib-scpi/                # lexer, command tree, parsed AST, response formatting
     │   └── src/{lib.rs, lexer.rs, tree.rs, command.rs, format.rs, session.rs}
     ├── quickvib-engine/              # state machine, error queue, OPC, recording pipeline, dispatch
     │   └── src/{lib.rs, state.rs, engine.rs, errors.rs, opc.rs, recording.rs, dispatch.rs}
+    ├── quickvib-sim/                 # BINARY crate -> m300-sim; the inbound device stand-in (§15)
+    │   └── src/{lib.rs, main.rs}
     └── quickvib-m300/                # WINDOWS-ONLY; the ONLY crate with `unsafe`
         ├── build.rs                  # bindgen, gated behind the `bindgen` feature (§11)
         └── src/{lib.rs, ffi.rs, resolver.rs, backend.rs}
@@ -526,6 +530,13 @@ and tested once.
   test. Because the peak/RMS/p-p of a synthesized sine are analytically known, the mock doubles as
   the oracle for measurement-math tests. Fault-injection modes (stall, link-drop, short-stream) exist
   for negative testing.
+* **`StreamBackend` (`--backend tcp`).** Records whatever dials into `--device-port`, framed by the
+  same `framer.rs` the M300 path uses. The device server owns the socket and the framer and hands
+  each batch to a `SampleSink`; a bounded `SampleChannel` is the queue between that link thread and
+  the reader thread, dropping the oldest samples when nobody is recording. Opening does not wait for
+  a device — `SYST:DEV:CONN?` stays `0` and `INIT` is `-241` until one dials in. Pure `std`, so the
+  whole route from socket to measurement runs on Linux CI; `m300-sim` (§15) is the stand-in that
+  drives it.
 * **`M300Backend`.** Wraps the SDK v1.2.0 C ABI plus the inbound socket. Lives in `quickvib-m300`,
   compiled only for Windows targets with the `m300` feature on, and constructed only when explicitly
   selected *and* running on Windows.
@@ -922,7 +933,7 @@ mismatch is rejected with `-224`. Property names are camelCase, mapped with
 | `schemaVersion` | int | yes | — | `1` |
 | `name` | string | yes | — | Human-readable project name |
 | `description` | string | no | `""` | Free text |
-| `device.backend` | string | no | `"mock"` | `"mock"` \| `"m300"` — deserialized into an enum |
+| `device.backend` | string | no | `"mock"` | `"mock"` \| `"tcp"` \| `"m300"` — deserialized into an enum |
 | `device.port` | int | no | `9123` | Inbound port the M300 dials; `--device-port` overrides |
 | `device.sampleRateHz` | number | yes | — | e.g. `100000` |
 | `device.unit` | string | yes | — | `"velocity_um_s"` \| `"displacement_um"` \| `"acceleration_m_s2"` |
@@ -960,7 +971,7 @@ enumerations; `ceil(duration × rate) × 4 ≤ maxCaptureBytes`, computed with `
 | `--scpi-port <n>` | 1–65535 | `5025` | Port the SCPI server listens on for the UTS. |
 | `--device-port <n>` | 1–65535 | `9123` | Port the device server listens on for the M300's inbound connection. Overrides `device.port`. |
 | `--headless` | flag | off | No interactive console UI; structured log lines only (§16). Intended for UTS-launched runs. |
-| `--backend <mock\|m300>` | enum | *(project, else `mock`)* | *(proposed)* Override the project's backend selection. `m300` on a non-Windows host, or in a build without the `m300` feature, is a startup error (exit `2`). |
+| `--backend <mock\|tcp\|m300>` | enum | *(project, else `mock`)* | *(proposed)* Override the project's backend selection. `tcp` records the inbound LE `f32` stream on `--device-port` (§7.4). `m300` on a non-Windows host, or in a build without the `m300` feature, is a startup error (exit `2`). |
 | `--no-auto-load` | flag | off | *(proposed)* Suppress auto-load-last, for a clean UTS run. |
 | `--log-level <level>` | enum | `info` | *(proposed)* `trace\|debug\|info\|warn\|error`. |
 | `--version` | flag | — | Print `quickvib <CARGO_PKG_VERSION>` and exit `0`. |
@@ -1058,6 +1069,12 @@ Linux. The Rust approach:
 6. **Clean failure, not a crash.** Missing DLL → `Library::new` error → `-241,"Hardware missing"` +
    an actionable log line naming every path probed. Missing symbol → the same, naming the symbol.
 7. **One manual Windows smoke checklist** covers what CI cannot (§11.8).
+8. **Rehearse the transport, not the SDK.** `--backend tcp` plus the `m300-sim` executable
+   (`crates/quickvib-sim`) exercise the inbound link end to end: the simulator is a TCP *client* that
+   dials the device port and pushes LE `f32`, which is the whole wire protocol. It stubs nothing —
+   there is still no DLL, fake or otherwise — and the QuickVib code it drives is the code a real
+   vibrometer drives. `crates/quickvib-sim/tests/pair.rs` spawns the built binary against an
+   in-process instrument, so the documented pair is what CI runs.
 
 Net effect: mock is the default, and everything except a thin, `unsafe`-confined interop crate is
 exercised on Linux in CI.
