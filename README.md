@@ -452,6 +452,7 @@ is what ships.
 | `quickvib-device` | `DeviceBackend` trait, mock backend, LE `f32` framer, inbound listener |
 | `quickvib-scpi` | Lexer, command tree, parsed commands, response formatting |
 | `quickvib-engine` | State machine, error queue, OPC, recording pipeline, dispatch |
+| `quickvib-testkit` | Dev-only shared test fixtures; ships nothing |
 | `quickvib-m300` | **Windows-only**, out of `default-members`, the only crate containing `unsafe` |
 
 ## 13. Troubleshooting
@@ -929,6 +930,7 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 | `quickvib-device` | `DeviceBackend` trait、模拟后端、小端 `f32` framer、入站监听 |
 | `quickvib-scpi` | 词法分析、命令树、命令解析结果、响应格式化 |
 | `quickvib-engine` | 状态机、错误队列、OPC、录制流水线、命令分发 |
+| `quickvib-testkit` | 仅供测试使用的共享夹具，不参与发布 |
 | `quickvib-m300` | **仅 Windows**，不在 `default-members` 中，是唯一包含 `unsafe` 的 crate |
 
 ## 13. 常见问题排查
