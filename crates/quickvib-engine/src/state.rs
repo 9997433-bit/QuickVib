@@ -72,6 +72,11 @@ pub enum Event {
     Completed,
     /// `ABOR`, a watchdog timeout, or a lost link.
     Abort,
+    /// The last capture was discarded out of band, as when a new project is adopted.
+    ///
+    /// Nothing is fetchable afterwards, so the terminal run status of the discarded run
+    /// goes with it and the instrument is back to "no run for this configuration".
+    Invalidate,
     /// `*RST`.
     Reset,
 }
@@ -85,6 +90,7 @@ impl Event {
             Self::FirstSample,
             Self::Completed,
             Self::Abort,
+            Self::Invalidate,
             Self::Reset,
         ]
     }
@@ -118,13 +124,15 @@ impl std::error::Error for IllegalTransition {}
 /// Apply `event` to `state`.
 ///
 /// `Reset` always lands in [`State::Idle`], and `Abort` outside a run is the documented
-/// no-op that standard SCPI leniency requires.
+/// no-op that standard SCPI leniency requires. `Invalidate` lands in [`State::Idle`] from
+/// every settled state but is rejected mid-run, because a run in flight owns the state
+/// machine until it finishes.
 ///
 /// # Errors
 /// [`IllegalTransition`] when the edge does not exist — most importantly `INIT` while a run
 /// is already in flight, which the UTS sees as `-221`.
 pub fn transition(state: State, event: Event) -> Result<State, IllegalTransition> {
-    use Event::{Abort, Completed, FirstSample, Init, Reset};
+    use Event::{Abort, Completed, FirstSample, Init, Invalidate, Reset};
     use State::{Aborted, Armed, Complete, Idle, Recording};
 
     let next = match (state, event) {
@@ -152,6 +160,9 @@ pub fn transition(state: State, event: Event) -> Result<State, IllegalTransition
         (Idle, Abort) => Idle,
         (Complete, Abort) => Complete,
         (Aborted, Abort) => Aborted,
+
+        (Idle | Complete | Aborted, Invalidate) => Idle,
+        (Armed | Recording, Invalidate) => return Err(IllegalTransition { from: state, event }),
     };
     Ok(next)
 }
@@ -223,6 +234,25 @@ mod tests {
     }
 
     #[test]
+    fn invalidating_the_capture_settles_in_idle() {
+        for state in [State::Idle, State::Complete, State::Aborted] {
+            assert_eq!(
+                transition(state, Event::Invalidate).unwrap(),
+                State::Idle,
+                "{state}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalidating_the_capture_mid_run_is_a_settings_conflict() {
+        for from in [State::Armed, State::Recording] {
+            let err = transition(from, Event::Invalidate).unwrap_err();
+            assert_eq!(err.scpi_error(), ScpiError::SettingsConflict);
+        }
+    }
+
+    #[test]
     fn the_full_state_event_table_is_covered() {
         // Exhaustive over both enums: every pair either has a documented target or is a
         // documented rejection. The point is that nothing panics and nothing is forgotten.
@@ -241,9 +271,9 @@ mod tests {
             }
         }
         assert_eq!(legal + rejected, State::all().len() * Event::all().len());
-        // Init from Armed/Recording, FirstSample from Idle/Complete/Aborted, and Completed
-        // from Idle/Complete/Aborted.
-        assert_eq!(rejected, 8);
+        // Init from Armed/Recording, FirstSample from Idle/Complete/Aborted, Completed from
+        // Idle/Complete/Aborted, and Invalidate from Armed/Recording.
+        assert_eq!(rejected, 10);
     }
 
     #[test]

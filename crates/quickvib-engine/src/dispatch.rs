@@ -279,6 +279,28 @@ mod tests {
     }
 
     #[test]
+    fn applying_a_project_stops_the_state_from_claiming_complete() {
+        let engine = engine();
+        send(&engine, "INIT");
+        assert_eq!(send(&engine, "REC:WAIT?"), "1");
+        assert_eq!(send(&engine, "REC:STAT?"), "COMPLETE");
+
+        // What the GUI's Apply button does.
+        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+
+        assert_eq!(send(&engine, "REC:STAT?"), "IDLE");
+        assert_eq!(send(&engine, "REC:WAIT?"), "0");
+        for query in ["FETC?", "TRAC:POIN?", "CALC:MEAS:ALL?"] {
+            assert_eq!(send(&engine, query), "", "for {query}");
+            assert_eq!(
+                send(&engine, "SYST:ERR?"),
+                "-230,\"Data corrupt or stale\"",
+                "for {query}"
+            );
+        }
+    }
+
+    #[test]
     fn measurement_decimals_follow_the_project() {
         let engine = engine();
         let mut project = Project::from_json_str(PROJECT).unwrap();

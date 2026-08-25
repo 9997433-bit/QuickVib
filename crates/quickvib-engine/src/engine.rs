@@ -323,13 +323,22 @@ impl Engine {
         Ok(())
     }
 
-    /// Install an already-parsed project, as the CLI does at startup.
+    /// Install an already-parsed project, as the CLI does at startup and the GUI's *Apply*
+    /// does at runtime.
+    ///
+    /// The previous capture is discarded, and the run status goes with it: `REC:STAT?` must
+    /// never answer `COMPLETE` while `FETC?` answers `-230`. A run in flight owns the state
+    /// machine, so its status is left alone — every caller already refuses to adopt while
+    /// [`State::is_running`].
     pub fn adopt_project(&self, project: Project, path: Option<PathBuf>) {
         let mut guard = self.lock();
         guard.duration_seconds = project.recording.duration_seconds;
         guard.format = project.export.format;
         guard.result = None;
         guard.outcome = None;
+        if let Ok(next) = transition(guard.state, Event::Invalidate) {
+            guard.state = next;
+        }
         guard.project = Some(project);
         guard.project_path = path;
         drop(guard);
@@ -1010,6 +1019,72 @@ mod tests {
         engine.set_duration(0.02).unwrap();
         assert!(run_to_completion(&engine));
         assert_eq!(engine.capture().unwrap().len(), 20);
+    }
+
+    #[test]
+    fn adopting_a_project_clears_the_completed_run_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = loaded_engine();
+        assert!(run_to_completion(&engine));
+        assert_eq!(engine.state(), State::Complete);
+
+        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+
+        // The whole point: no state that claims a fetchable capture, and no fetchable data.
+        assert_eq!(engine.state(), State::Idle);
+        assert_eq!(engine.capture().unwrap_err(), ScpiError::DataCorruptOrStale);
+        assert_eq!(
+            engine.measurements().unwrap_err(),
+            ScpiError::DataCorruptOrStale
+        );
+        assert_eq!(
+            engine.export_capture(&dir.path().join("run.csv")),
+            Err(ScpiError::DataCorruptOrStale)
+        );
+        assert!(!engine.wait_for_run());
+    }
+
+    #[test]
+    fn loading_a_project_from_disk_clears_the_completed_run_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Reloaded.proj");
+        std::fs::write(&path, PROJECT).unwrap();
+        let engine = loaded_engine();
+        assert!(run_to_completion(&engine));
+
+        engine.load_project(&path).unwrap();
+
+        assert_eq!(engine.state(), State::Idle);
+        assert_eq!(engine.capture().unwrap_err(), ScpiError::DataCorruptOrStale);
+    }
+
+    #[test]
+    fn adopting_a_project_does_not_resurrect_an_aborted_capture() {
+        let engine = engine_with(MockFault::Stall);
+        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine.start_recording().unwrap();
+        engine.abort();
+        assert!(!engine.wait_for_run());
+        assert_eq!(engine.state(), State::Aborted);
+
+        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+
+        assert_eq!(engine.state(), State::Idle);
+        assert_eq!(engine.capture().unwrap_err(), ScpiError::DataCorruptOrStale);
+    }
+
+    #[test]
+    fn adopting_a_project_mid_run_leaves_the_run_in_flight() {
+        let engine = engine_with(MockFault::Stall);
+        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+        engine.start_recording().unwrap();
+
+        engine.adopt_project(Project::from_json_str(PROJECT).unwrap(), None);
+
+        assert!(engine.state().is_running());
+        engine.abort();
+        assert!(!engine.wait_for_run());
+        assert_eq!(engine.state(), State::Aborted);
     }
 
     #[test]
