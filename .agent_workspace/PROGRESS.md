@@ -47,12 +47,12 @@ Round 1 的 fable-A 以 **云端子代理**（`environment=cloud`）派出，模
 
 | ID | 简称 | slug | 环境 | Task ID | 主攻 |
 | --- | --- | --- | --- | --- | --- |
-| R2-fable-A | fable | `claude-fable-5-thinking-xhigh` | local | （派发后填写） | 对照简报复审 R1 修复 + SOTA 验收差距 |
-| R2-fable-B | fable | `claude-fable-5-thinking-xhigh` | local | （派发后填写） | B1–B10 修复方案把关，防过度设计 |
-| R2-opus-A | opus-fast | `claude-opus-5-thinking-high-fast` | local | （派发后填写） | B1 spawn 失败收尾 + B5 TOCTOU |
-| R2-opus-B | opus-fast | `claude-opus-5-thinking-high-fast` | local | （派发后填写） | B4 可中断 pace、B6 错误队列、B3 stop 钩子 |
-| R2-gpt-A | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | （派发后填写） | 全量回归探针 + clippy |
-| R2-gpt-B | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | （派发后填写） | B1/B4/B5/B6 回归测试 |
+| R2-fable-A | fable | `claude-fable-5-thinking-xhigh` | local | `bc-36ae2fd9-9d50-51b3-82ab-379791e523ee` | 对照简报复审 R1 修复 + SOTA 验收差距 |
+| R2-fable-B | fable | `claude-fable-5-thinking-xhigh` | local | `bc-a84f7014-d666-532c-81c4-c2f2402a5cc8` | B1–B10 修复方案把关，防过度设计 |
+| R2-opus-A | opus-fast | `claude-opus-5-thinking-high-fast` | local | `bc-dc051f81-73b7-59a0-8f6e-f882e0b12749` | B1 spawn 失败收尾、B5 TOCTOU、B3 stop 钩子 |
+| R2-opus-B | opus-fast | `claude-opus-5-thinking-high-fast` | local | `bc-f7955524-6e23-5907-9b04-37928c8ab0b8` | B4 可中断 pace、B6 错误队列、B8/B10 |
+| R2-gpt-A | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | `bc-25322d09-0897-5eb8-afa1-a5185a6083aa` | 全量回归探针 + clippy |
+| R2-gpt-B | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | `bc-8e547eb6-8387-515a-8f6d-67e01773b209` | B1/B4/B5/B6 回归测试 |
 
 ## 产出目录
 
