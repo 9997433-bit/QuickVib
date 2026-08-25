@@ -6,9 +6,11 @@
 
 use std::net::SocketAddr;
 
-use quickvib_core::{ExportFormat, ScpiErrorEntry};
+use quickvib_core::{ExportFormat, SampleUnit, ScpiErrorEntry};
 use quickvib_engine::State;
 use quickvib_measure::MeasurementSet;
+
+use crate::i18n::{self, Label, Lang};
 
 /// One consistent reading of the instrument, taken between repaints.
 #[derive(Debug, Clone, PartialEq)]
@@ -23,6 +25,11 @@ pub struct StatusSnapshot {
     pub identity: String,
     /// Name of the loaded project, empty when none is loaded.
     pub project_name: String,
+    /// The unit the loaded project configures the device for, which is the unit every
+    /// measurement on screen carries. `None` when no project is loaded.
+    pub unit: Option<SampleUnit>,
+    /// The sample rate of the loaded project, in hertz. `0.0` when no project is loaded.
+    pub sample_rate_hz: f64,
     /// The record duration in force, including any `CONF:REC:DUR` override.
     pub duration_seconds: f64,
     /// The export format in force, including any `FORM` override.
@@ -44,15 +51,24 @@ impl StatusSnapshot {
         self.state.is_running()
     }
 
-    /// A one-line summary for the status bar.
+    /// A one-line summary for the status bar, in `lang`: 录制中 · 已连接.
     #[must_use]
-    pub fn headline(&self) -> String {
-        let link = if self.connected {
-            "device connected"
+    pub fn headline(&self, lang: Lang) -> String {
+        format!(
+            "{} · {}",
+            i18n::state_label(lang, self.state),
+            lang.t(self.link_label())
+        )
+    }
+
+    /// Which of 已连接 / 未连接 describes the device link.
+    #[must_use]
+    pub const fn link_label(&self) -> Label {
+        if self.connected {
+            Label::Connected
         } else {
-            "no device"
-        };
-        format!("{} | {link}", self.state.as_scpi_str())
+            Label::Disconnected
+        }
     }
 }
 
@@ -105,6 +121,8 @@ mod tests {
             device_peer: None,
             identity: String::new(),
             project_name: String::new(),
+            unit: None,
+            sample_rate_hz: 0.0,
             duration_seconds: 1.0,
             format: ExportFormat::Csv,
             measurements: None,
@@ -115,14 +133,20 @@ mod tests {
     }
 
     #[test]
-    fn the_headline_names_the_state_and_the_link() {
+    fn the_headline_names_the_state_and_the_link_in_chinese() {
         let s = snapshot(State::Recording, true);
-        assert_eq!(s.headline(), "RECORDING | device connected");
+        assert_eq!(s.headline(Lang::default()), "录制中 · 已连接");
         assert!(s.is_running());
 
         let s = snapshot(State::Idle, false);
-        assert_eq!(s.headline(), "IDLE | no device");
+        assert_eq!(s.headline(Lang::Zh), "空闲 · 未连接");
         assert!(!s.is_running());
+    }
+
+    #[test]
+    fn the_headline_follows_the_language_switch() {
+        let s = snapshot(State::Recording, true);
+        assert_eq!(s.headline(Lang::En), "RECORDING · Connected");
     }
 
     #[test]

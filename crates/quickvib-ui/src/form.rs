@@ -14,28 +14,115 @@ use quickvib_project::schema::{
     DEFAULT_ACCELERATION_RANGE, DEFAULT_DEVICE_PORT, DEFAULT_DISPLACEMENT_RANGE,
     DEFAULT_MAX_CAPTURE_BYTES, DEFAULT_SCPI_PORT, DEFAULT_VELOCITY_RANGE,
 };
+use quickvib_project::validate::MAX_DURATION_SECONDS;
 use quickvib_project::{
     Device, Export, Identity, Measurement, Mock, MockSignal, Project, ProjectError, Recording,
     Server, SignalComponent, SCHEMA_VERSION,
 };
 
+use crate::i18n::{self, Lang};
+
+/// Why a field was rejected, as data rather than as a sentence.
+///
+/// The window is drawn in Simplified Chinese by default, so a rejection cannot be a baked
+/// English string: it has to survive translation. Every rule the form applies is one of these
+/// variants, and [`FieldError::localized`] turns it into the sentence the operator reads.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Issue {
+    /// The field was left blank.
+    Empty,
+    /// The text is not a finite number.
+    NotANumber {
+        /// What was typed.
+        input: String,
+    },
+    /// The value parsed but is zero or negative where only a positive value is meaningful.
+    NotPositive {
+        /// The offending value.
+        value: f64,
+    },
+    /// The value parsed but is negative where zero is the floor.
+    Negative {
+        /// The offending value.
+        value: f64,
+    },
+    /// The text is not a TCP port in `1..=65535`.
+    BadPort {
+        /// What was typed.
+        input: String,
+    },
+    /// The SCPI port and the device port are the same number.
+    DuplicatePort,
+    /// The high-pass cutoff is at or above the low-pass cutoff.
+    AboveLowPass {
+        /// The low-pass cutoff in force, in hertz.
+        lpf_hz: f64,
+    },
+    /// The requested capture is longer than QuickVib will record.
+    DurationTooLong {
+        /// The longest capture the instrument accepts, in seconds.
+        max_seconds: f64,
+    },
+    /// Rate times duration would need more memory than the project's capture cap allows.
+    CaptureTooLarge {
+        /// The cap from `recording.maxCaptureBytes`.
+        max_bytes: u64,
+    },
+    /// A run is in flight, so nothing may be applied.
+    RunInFlight,
+    /// A rule the project validator applied that the form does not model itself. The English
+    /// sentence in [`FieldError::message`] is the whole story.
+    Schema,
+}
+
 /// One rejected field, ready to be shown next to the control that produced it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FieldError {
     /// The schema path of the offending field, e.g. `device.sampleRateHz`.
     pub field: String,
-    /// What is wrong with it, in a sentence an operator can act on.
+    /// What is wrong with it, in a sentence an operator can act on. Always English: this is
+    /// the text that reaches log lines and `save()`'s error string. The window shows
+    /// [`FieldError::localized`] instead.
     pub message: String,
+    /// The same rejection as data, for translation.
+    pub issue: Issue,
 }
 
 impl FieldError {
-    /// A rejection of `field` because of `message`.
+    /// A rejection of `field` because of `message`, with no structured issue behind it.
     #[must_use]
     pub fn new(field: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             field: field.into(),
             message: message.into(),
+            issue: Issue::Schema,
         }
+    }
+
+    /// A rejection of `field` that carries `issue`, so the window can translate it.
+    #[must_use]
+    pub fn of(field: impl Into<String>, message: impl Into<String>, issue: Issue) -> Self {
+        Self {
+            field: field.into(),
+            message: message.into(),
+            issue,
+        }
+    }
+
+    /// The rejection as the operator reads it: the field's name in `lang`, then the reason.
+    #[must_use]
+    pub fn localized(&self, lang: Lang) -> String {
+        format!(
+            "{}: {}",
+            i18n::field_label(lang, &self.field),
+            self.reason(lang)
+        )
+    }
+
+    /// The reason on its own, without the field name.
+    #[must_use]
+    pub fn reason(&self, lang: Lang) -> String {
+        i18n::issue_text(lang, &self.issue).unwrap_or_else(|| self.message.clone())
     }
 }
 
@@ -234,12 +321,16 @@ impl ProjectForm {
             project.export.directory = PathBuf::from(".");
         }
         if self.scpi_port.trim() == self.device_port.trim() {
-            errors.push(FieldError::new(
+            errors.push(FieldError::of(
                 "server.scpiPort",
                 "must differ from the device port",
+                Issue::DuplicatePort,
             ));
         }
 
+        if errors.is_empty() {
+            cross_field_rules(&project, &mut errors);
+        }
         if !errors.is_empty() {
             return Err(errors);
         }
@@ -327,15 +418,18 @@ fn number(value: f64) -> String {
 fn parse(errors: &mut Vec<FieldError>, field: &str, text: &str) -> Option<f64> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        errors.push(FieldError::new(field, "must not be empty"));
+        errors.push(FieldError::of(field, "must not be empty", Issue::Empty));
         return None;
     }
     match trimmed.parse::<f64>() {
         Ok(value) if value.is_finite() => Some(value),
         _ => {
-            errors.push(FieldError::new(
+            errors.push(FieldError::of(
                 field,
                 format!("'{trimmed}' is not a finite number"),
+                Issue::NotANumber {
+                    input: trimmed.to_owned(),
+                },
             ));
             None
         }
@@ -346,9 +440,10 @@ fn positive(errors: &mut Vec<FieldError>, field: &str, text: &str) -> f64 {
     match parse(errors, field, text) {
         Some(value) if value > 0.0 => value,
         Some(value) => {
-            errors.push(FieldError::new(
+            errors.push(FieldError::of(
                 field,
                 format!("must be greater than zero, found {value}"),
+                Issue::NotPositive { value },
             ));
             0.0
         }
@@ -360,9 +455,10 @@ fn non_negative(errors: &mut Vec<FieldError>, field: &str, text: &str) -> f64 {
     match parse(errors, field, text) {
         Some(value) if value >= 0.0 => value,
         Some(value) => {
-            errors.push(FieldError::new(
+            errors.push(FieldError::of(
                 field,
                 format!("must not be negative, found {value}"),
+                Issue::Negative { value },
             ));
             0.0
         }
@@ -374,12 +470,57 @@ fn port(errors: &mut Vec<FieldError>, field: &str, text: &str) -> u16 {
     match text.trim().parse::<u32>() {
         Ok(value) if (1..=65_535).contains(&value) => value as u16,
         _ => {
-            errors.push(FieldError::new(
+            errors.push(FieldError::of(
                 field,
                 format!("'{}' is not a port in 1..=65535", text.trim()),
+                Issue::BadPort {
+                    input: text.trim().to_owned(),
+                },
             ));
             1
         }
+    }
+}
+
+/// The rules that need the whole assembled project rather than one field's text.
+///
+/// [`quickvib_project::validate`] enforces all of them too and remains the last gate before a
+/// project is adopted; they are repeated here so the operator gets a translated sentence
+/// pointing at a control instead of the validator's English one-liner.
+fn cross_field_rules(project: &Project, errors: &mut Vec<FieldError>) {
+    if project.name.trim().is_empty() {
+        errors.push(FieldError::of("name", "must not be empty", Issue::Empty));
+    }
+
+    let lpf = project.device.effective_lpf_hz();
+    let high_pass = project.device.high_pass_hz;
+    if high_pass > 0.0 && high_pass >= lpf {
+        errors.push(FieldError::of(
+            "device.highPassHz",
+            format!("must be below the low-pass cutoff ({lpf} Hz), found {high_pass}"),
+            Issue::AboveLowPass { lpf_hz: lpf },
+        ));
+    }
+
+    let duration = project.recording.duration_seconds;
+    if duration > MAX_DURATION_SECONDS {
+        errors.push(FieldError::of(
+            "recording.durationSeconds",
+            format!("must be in (0, {MAX_DURATION_SECONDS}], found {duration}"),
+            Issue::DurationTooLong {
+                max_seconds: MAX_DURATION_SECONDS,
+            },
+        ));
+    } else if project.expected_samples(duration).is_err() {
+        let max_bytes = project.recording.max_capture_bytes;
+        errors.push(FieldError::of(
+            "recording.durationSeconds",
+            format!(
+                "ceil({duration} * {}) * 4 bytes exceeds maxCaptureBytes ({max_bytes})",
+                project.device.sample_rate_hz
+            ),
+            Issue::CaptureTooLarge { max_bytes },
+        ));
     }
 }
 
@@ -388,6 +529,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    use crate::i18n::Lang;
 
     fn project() -> Project {
         Project::from_json_str(
@@ -540,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_rules_the_form_cannot_check_still_reach_the_operator() {
+    fn cross_field_rules_point_at_a_control_in_the_operators_language() {
         let base = project();
         let mut form = ProjectForm::from_project(&base);
         // Below Nyquist is fine; above the low-pass cutoff is not.
@@ -549,15 +692,39 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].field, "device.highPassHz");
         assert!(errors[0].message.contains("low-pass"), "{:?}", errors[0]);
+        assert_eq!(
+            errors[0].issue,
+            Issue::AboveLowPass { lpf_hz: 50_000.0 },
+            "the rejection has to survive translation"
+        );
+        assert_eq!(
+            errors[0].localized(Lang::Zh),
+            "高通滤波: 必须低于低通截止频率（50 kHz）"
+        );
     }
 
     #[test]
-    fn an_over_long_capture_is_rejected_with_the_schema_message() {
+    fn an_over_long_capture_is_rejected_by_the_capture_cap() {
         let base = project();
         let mut form = ProjectForm::from_project(&base);
         form.duration_seconds = "3600".to_owned();
         let errors = form.to_project(&base).unwrap_err();
         assert_eq!(errors[0].field, "recording.durationSeconds");
+        assert!(
+            matches!(errors[0].issue, Issue::CaptureTooLarge { .. }),
+            "{:?}",
+            errors[0]
+        );
+        assert!(errors[0].localized(Lang::Zh).starts_with("录制时长: "));
+
+        form.duration_seconds = "7200".to_owned();
+        let errors = form.to_project(&base).unwrap_err();
+        assert_eq!(
+            errors[0].issue,
+            Issue::DurationTooLong {
+                max_seconds: 3600.0
+            }
+        );
     }
 
     #[test]
@@ -565,7 +732,36 @@ mod tests {
         let base = project();
         let mut form = ProjectForm::from_project(&base);
         form.name = "   ".to_owned();
-        assert_eq!(form.to_project(&base).unwrap_err()[0].field, "name");
+        let errors = form.to_project(&base).unwrap_err();
+        assert_eq!(errors[0].field, "name");
+        assert_eq!(errors[0].issue, Issue::Empty);
+        assert_eq!(errors[0].localized(Lang::Zh), "项目名称: 不能为空");
+    }
+
+    #[test]
+    fn every_rejection_the_form_makes_is_translatable() {
+        // A rejection that falls through to `Issue::Schema` shows the validator's English
+        // sentence, which is exactly what this test exists to keep out of the window.
+        let base = project();
+        let mut form = ProjectForm::from_project(&base);
+        form.set_sample_rate_text("fast");
+        form.duration_seconds = String::new();
+        form.high_pass_hz = "-3".to_owned();
+        form.scpi_port = "70000".to_owned();
+        form.velocity_range = "0".to_owned();
+
+        let errors = form.to_project(&base).unwrap_err();
+        assert!(errors.len() >= 5);
+        for error in &errors {
+            assert_ne!(error.issue, Issue::Schema, "{error:?} cannot be translated");
+            let shown = error.localized(Lang::Zh);
+            assert!(
+                shown
+                    .chars()
+                    .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "{shown} is not Chinese"
+            );
+        }
     }
 
     #[test]

@@ -13,27 +13,148 @@ use quickvib_device::ConnectionState;
 use quickvib_engine::Engine;
 use quickvib_project::Project;
 
-use crate::form::{starter_project, FieldError, ProjectForm};
+use crate::form::{starter_project, FieldError, Issue, ProjectForm};
+use crate::i18n::{Label, Lang};
 use crate::status::StatusSnapshot;
+
+/// What the operator asked the instrument to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// Open a project file.
+    Load(PathBuf),
+    /// Write the project to a file.
+    Save(PathBuf),
+    /// Start a capture.
+    Start,
+    /// Export the last capture.
+    Export,
+}
+
+impl Action {
+    /// "Could not …", in `lang`.
+    #[must_use]
+    pub fn failed_text(&self, lang: Lang) -> String {
+        match (lang, self) {
+            (Lang::Zh, Self::Load(path)) => format!("无法加载 {}", path.display()),
+            (Lang::Zh, Self::Save(path)) => format!("无法保存 {}", path.display()),
+            (Lang::Zh, Self::Start) => "无法开始录制".to_owned(),
+            (Lang::Zh, Self::Export) => "无法导出数据".to_owned(),
+            (Lang::En, Self::Load(path)) => format!("could not load {}", path.display()),
+            (Lang::En, Self::Save(path)) => format!("could not save {}", path.display()),
+            (Lang::En, Self::Start) => "could not start the recording".to_owned(),
+            (Lang::En, Self::Export) => "could not export the capture".to_owned(),
+        }
+    }
+}
+
+/// Why an action the operator asked for did not happen.
+///
+/// Structured rather than pre-rendered because the window is drawn in Chinese: the reason has
+/// to survive the language switch, and the SCPI code inside it has to survive translation
+/// untouched so it still matches the manual and the UTS log.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ActionError {
+    /// The instrument refused, with a SCPI-99 code.
+    Refused {
+        /// What was attempted.
+        action: Action,
+        /// Why the instrument said no.
+        error: ScpiError,
+    },
+    /// *Save* on a project that has never been written to disk.
+    NoProjectFile,
+    /// A path or file name field was left blank.
+    BlankName,
+    /// The form could not be folded into a project.
+    Fields(Vec<FieldError>),
+}
+
+impl ActionError {
+    /// The message the status bar shows, in `lang`.
+    #[must_use]
+    pub fn localized(&self, lang: Lang) -> String {
+        match self {
+            Self::Refused { action, error } => {
+                crate::i18n::refusal(lang, &action.failed_text(lang), *error)
+            }
+            Self::NoProjectFile => match lang {
+                Lang::Zh => "该项目尚未保存过，请使用「另存为」".to_owned(),
+                Lang::En => "this project has no file yet — use Save as".to_owned(),
+            },
+            Self::BlankName => lang.t(Label::NoticeEmptyFileName).to_owned(),
+            Self::Fields(errors) => errors
+                .iter()
+                .map(|error| error.localized(lang))
+                .collect::<Vec<_>>()
+                .join("; "),
+        }
+    }
+}
+
+impl std::fmt::Display for ActionError {
+    /// The English rendering, which is what log lines and `Debug` output carry.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.localized(Lang::En))
+    }
+}
+
+/// A setting the running process cannot pick up, because it was consumed once at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartField {
+    /// Which backend the engine drives.
+    Backend,
+    /// The port the device dials in on.
+    DevicePort,
+    /// The port the UTS connects in on.
+    ScpiPort,
+    /// The sample rate the backend was opened with.
+    SampleRate,
+    /// The unit the backend was opened with.
+    DataType,
+}
+
+impl RestartField {
+    /// The name of the setting, in `lang`.
+    #[must_use]
+    pub const fn label(self, lang: Lang) -> &'static str {
+        lang.t(match self {
+            Self::Backend => Label::FieldBackend,
+            Self::DevicePort => Label::FieldDevicePort,
+            Self::ScpiPort => Label::FieldScpiPort,
+            Self::SampleRate => Label::FieldSampleRate,
+            Self::DataType => Label::FieldDataType,
+        })
+    }
+}
 
 /// What [`UiController::apply`] did.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ApplyOutcome {
     /// Settings that were written into the project but that the already-open transports and
     /// the already-opened backend cannot pick up until QuickVib is restarted.
-    pub restart_required: Vec<&'static str>,
+    pub restart_required: Vec<RestartField>,
 }
 
 impl ApplyOutcome {
     /// A sentence for the activity line, or `None` when everything took effect immediately.
     #[must_use]
-    pub fn restart_note(&self) -> Option<String> {
+    pub fn restart_note(&self, lang: Lang) -> Option<String> {
         if self.restart_required.is_empty() {
             return None;
         }
+        let names: Vec<&str> = self
+            .restart_required
+            .iter()
+            .map(|field| field.label(lang))
+            .collect();
+        let separator = match lang {
+            Lang::Zh => "、",
+            Lang::En => ", ",
+        };
         Some(format!(
-            "restart QuickVib for: {}",
-            self.restart_required.join(", ")
+            "{}: {}",
+            lang.t(Label::RestartHeading),
+            names.join(separator)
         ))
     }
 }
@@ -125,9 +246,10 @@ impl UiController {
     /// the same `-221` rule the SCPI layer applies.
     pub fn apply(&mut self) -> Result<ApplyOutcome, Vec<FieldError>> {
         if self.engine.state().is_running() {
-            return Err(vec![FieldError::new(
+            return Err(vec![FieldError::of(
                 "project",
                 "a recording is in flight; stop it before applying changes",
+                Issue::RunInFlight,
             )]);
         }
 
@@ -152,13 +274,16 @@ impl UiController {
     /// Load `path` into the engine and into the form.
     ///
     /// # Errors
-    /// A human-readable message: the file is missing, malformed, invalid, or a run is in
+    /// [`ActionError::Refused`]: the file is missing, malformed, invalid, or a run is in
     /// flight.
-    pub fn load(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
+    pub fn load(&mut self, path: impl AsRef<Path>) -> Result<(), ActionError> {
         let path = path.as_ref();
         self.engine
             .load_project(path)
-            .map_err(|error| describe(error, &format!("could not load {}", path.display())))?;
+            .map_err(|error| ActionError::Refused {
+                action: Action::Load(path.to_path_buf()),
+                error,
+            })?;
         self.path = Some(path.to_path_buf());
         self.revert();
         Ok(())
@@ -167,11 +292,11 @@ impl UiController {
     /// Apply the form, then write the project back to the path it came from.
     ///
     /// # Errors
-    /// The rejected fields, rendered as one message, or the reason the write failed. Saving
-    /// a project that has never been on disk is an error naming *Save as*.
-    pub fn save(&mut self) -> Result<PathBuf, String> {
+    /// The rejected fields, or the reason the write failed. Saving a project that has never
+    /// been on disk is [`ActionError::NoProjectFile`], which names *Save as*.
+    pub fn save(&mut self) -> Result<PathBuf, ActionError> {
         let Some(path) = self.path.clone() else {
-            return Err("this project has no file yet — use Save as".to_owned());
+            return Err(ActionError::NoProjectFile);
         };
         self.save_as(path)
     }
@@ -179,28 +304,34 @@ impl UiController {
     /// Apply the form, then write the project to `path` and remember it as the current file.
     ///
     /// # Errors
-    /// The rejected fields, rendered as one message, or the reason the write failed.
-    pub fn save_as(&mut self, path: impl AsRef<Path>) -> Result<PathBuf, String> {
+    /// The rejected fields, or the reason the write failed.
+    pub fn save_as(&mut self, path: impl AsRef<Path>) -> Result<PathBuf, ActionError> {
         let path = path.as_ref().to_path_buf();
-        self.apply().map_err(render_errors)?;
+        self.apply().map_err(ActionError::Fields)?;
         self.path = Some(path.clone());
         // Going through the engine keeps the runtime overrides, the auto-load-last record and
         // the log line identical to `MMEM:STOR:STAT`.
         self.engine
             .store_project(&path)
-            .map_err(|error| describe(error, &format!("could not save {}", path.display())))?;
+            .map_err(|error| ActionError::Refused {
+                action: Action::Save(path.clone()),
+                error,
+            })?;
         Ok(path)
     }
 
     /// Start a capture, as `INIT` does.
     ///
     /// # Errors
-    /// A human-readable rendering of the SCPI error: no project, already recording, no
-    /// device, or a capture that would exceed the buffer cap.
-    pub fn start(&self) -> Result<(), String> {
+    /// [`ActionError::Refused`]: no project, already recording, no device, or a capture that
+    /// would exceed the buffer cap.
+    pub fn start(&self) -> Result<(), ActionError> {
         self.engine
             .start_recording()
-            .map_err(|error| describe(error, "could not start the recording"))
+            .map_err(|error| ActionError::Refused {
+                action: Action::Start,
+                error,
+            })
     }
 
     /// Abort the active capture, as `ABOR` does. Never an error.
@@ -212,31 +343,38 @@ impl UiController {
     /// directory exactly as `MMEM:STOR:TRAC` does.
     ///
     /// # Errors
-    /// A human-readable message when there is no completed capture or the path is not
-    /// writable.
-    pub fn export(&self, name: &str) -> Result<PathBuf, String> {
+    /// [`ActionError::BlankName`] for an empty file name, or [`ActionError::Refused`] when
+    /// there is no completed capture or the path is not writable.
+    pub fn export(&self, name: &str) -> Result<PathBuf, ActionError> {
         let name = name.trim();
         if name.is_empty() {
-            return Err("enter a file name to export to".to_owned());
+            return Err(ActionError::BlankName);
         }
         self.engine
             .export_capture(Path::new(name))
-            .map_err(|error| describe(error, "could not export the capture"))
+            .map_err(|error| ActionError::Refused {
+                action: Action::Export,
+                error,
+            })
     }
 
     /// Read the instrument in one pass.
     #[must_use]
     pub fn snapshot(&self) -> StatusSnapshot {
         let measurements = self.engine.measurements().ok();
+        let project = self.engine.project();
         StatusSnapshot {
             state: self.engine.state(),
             connected: self.engine.device_connected(),
             device_peer: self.link.as_ref().and_then(|link| link.peer()),
             identity: self.engine.identity(),
-            project_name: self
-                .engine
-                .project()
-                .map_or_else(String::new, |project| project.name),
+            project_name: project
+                .as_ref()
+                .map_or_else(String::new, |project| project.name.clone()),
+            unit: project.as_ref().map(|project| project.device.unit),
+            sample_rate_hz: project
+                .as_ref()
+                .map_or(0.0, |project| project.device.sample_rate_hz),
             duration_seconds: self.engine.duration_seconds(),
             format: self.engine.format(),
             measurements,
@@ -252,36 +390,24 @@ impl UiController {
 /// The two listeners are bound at startup and the backend is opened with the sample rate and
 /// unit that were in force then, so changing any of those is honoured in the saved project but
 /// not in this process.
-fn restart_required(before: &Project, after: &Project) -> Vec<&'static str> {
+fn restart_required(before: &Project, after: &Project) -> Vec<RestartField> {
     let mut fields = Vec::new();
     if before.device.backend != after.device.backend {
-        fields.push("backend");
+        fields.push(RestartField::Backend);
     }
     if before.device.port != after.device.port {
-        fields.push("device port");
+        fields.push(RestartField::DevicePort);
     }
     if before.server.scpi_port != after.server.scpi_port {
-        fields.push("SCPI port");
+        fields.push(RestartField::ScpiPort);
     }
     if before.device.sample_rate_hz != after.device.sample_rate_hz {
-        fields.push("sample rate");
+        fields.push(RestartField::SampleRate);
     }
     if before.device.unit != after.device.unit {
-        fields.push("data type");
+        fields.push(RestartField::DataType);
     }
     fields
-}
-
-fn render_errors(errors: Vec<FieldError>) -> String {
-    errors
-        .iter()
-        .map(FieldError::to_string)
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn describe(error: ScpiError, context: &str) -> String {
-    format!("{context}: {} ({})", error.message(), error.code())
 }
 
 #[cfg(test)]
@@ -290,7 +416,7 @@ mod tests {
 
     use super::*;
 
-    use quickvib_core::{Clock, ExportFormat, NullLogger, SampleUnit, TestClock};
+    use quickvib_core::{Clock, ExportFormat, NullLogger, SampleUnit, ScpiError, TestClock};
     use quickvib_device::{DeviceBackend, DeviceOpenOptions, MockBackend};
     use quickvib_engine::{EngineConfig, State};
     use quickvib_project::ProjectStore;
@@ -370,14 +496,24 @@ mod tests {
         assert_eq!(
             outcome.restart_required,
             [
-                "backend",
-                "device port",
-                "SCPI port",
-                "sample rate",
-                "data type"
+                RestartField::Backend,
+                RestartField::DevicePort,
+                RestartField::ScpiPort,
+                RestartField::SampleRate,
+                RestartField::DataType
             ]
         );
-        assert!(outcome.restart_note().unwrap().contains("SCPI port"));
+
+        let note = outcome.restart_note(Lang::Zh).unwrap();
+        assert_eq!(
+            note,
+            "需重启后生效: 数据来源、设备端口、SCPI 端口、采样率、数据类型"
+        );
+        assert!(outcome
+            .restart_note(Lang::En)
+            .unwrap()
+            .contains("SCPI port"));
+        assert!(ApplyOutcome::default().restart_note(Lang::Zh).is_none());
     }
 
     #[test]
@@ -400,6 +536,11 @@ mod tests {
         controller.form_mut().name = "Nope".to_owned();
         let errors = controller.apply().unwrap_err();
         assert!(errors[0].message.contains("in flight"), "{errors:?}");
+        assert_eq!(errors[0].issue, Issue::RunInFlight);
+        assert_eq!(
+            errors[0].localized(Lang::Zh),
+            "项目信息: 录制进行中：请先停止再修改配置"
+        );
         controller.stop();
         assert!(!controller.engine().wait_for_run());
     }
@@ -435,7 +576,13 @@ mod tests {
     #[test]
     fn save_without_a_path_asks_for_save_as() {
         let mut controller = loaded();
-        assert!(controller.save().unwrap_err().contains("Save as"));
+        let error = controller.save().unwrap_err();
+        assert_eq!(error, ActionError::NoProjectFile);
+        assert_eq!(
+            error.localized(Lang::Zh),
+            "该项目尚未保存过，请使用「另存为」"
+        );
+        assert!(error.localized(Lang::En).contains("Save as"));
     }
 
     #[test]
@@ -457,8 +604,22 @@ mod tests {
     fn loading_a_missing_file_is_a_message_not_a_panic() {
         let dir = tempfile::tempdir().unwrap();
         let mut controller = loaded();
-        let error = controller.load(dir.path().join("nope.proj")).unwrap_err();
-        assert!(error.contains("could not load"), "{error}");
+        let missing = dir.path().join("nope.proj");
+        let error = controller.load(&missing).unwrap_err();
+        assert_eq!(
+            error,
+            ActionError::Refused {
+                action: Action::Load(missing.clone()),
+                error: ScpiError::FileNameNotFound,
+            }
+        );
+
+        // The operator reads Chinese; the SCPI code inside the sentence is untranslated on
+        // purpose, because that is what the manual and the UTS log show.
+        let zh = error.localized(Lang::Zh);
+        assert!(zh.starts_with("无法加载 "), "{zh}");
+        assert!(zh.contains("文件不存在（-256）"), "{zh}");
+        assert!(error.localized(Lang::En).contains("could not load"));
     }
 
     #[test]
@@ -475,15 +636,18 @@ mod tests {
         assert_eq!(snapshot.sample_count, 50);
         assert!(snapshot.measurements.unwrap().rms > 0.0);
         assert_eq!(snapshot.project_name, "UiTest");
+        assert_eq!(snapshot.unit, Some(SampleUnit::VelocityUmPerSec));
+        assert_eq!(snapshot.sample_rate_hz, 1000.0);
         assert!(snapshot.identity.starts_with("QuickVib,"));
-        assert_eq!(snapshot.headline(), "COMPLETE | device connected");
+        assert_eq!(snapshot.headline(Lang::Zh), "完成 · 已连接");
     }
 
     #[test]
     fn start_without_a_project_reports_the_scpi_error() {
         let controller = UiController::new(engine());
         let error = controller.start().unwrap_err();
-        assert!(error.contains("-221"), "{error}");
+        assert!(error.localized(Lang::Zh).contains("-221"), "{error}");
+        assert_eq!(error.localized(Lang::Zh), "无法开始录制：设置冲突（-221）");
     }
 
     #[test]
@@ -495,13 +659,20 @@ mod tests {
         engine.adopt_project(project, None);
 
         let controller = UiController::new(engine);
-        assert!(controller.export("run.csv").unwrap_err().contains("-230"));
+        assert!(controller
+            .export("run.csv")
+            .unwrap_err()
+            .localized(Lang::Zh)
+            .contains("-230"));
 
         controller.start().unwrap();
         assert!(controller.engine().wait_for_run());
         let written = controller.export("run.csv").unwrap();
         assert_eq!(written, dir.path().join("run.csv"));
         assert!(written.is_file());
-        assert!(controller.export("  ").unwrap_err().contains("file name"));
+
+        let blank = controller.export("  ").unwrap_err();
+        assert_eq!(blank, ActionError::BlankName);
+        assert_eq!(blank.localized(Lang::Zh), "请先输入导出文件名");
     }
 }
