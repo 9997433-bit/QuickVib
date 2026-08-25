@@ -1,5 +1,6 @@
 [package]
 name = "quickvib-engine"
+description = "QuickVib instrument engine: state machine, error queue, OPC, recording pipeline and SCPI dispatch."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,3 +11,13 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+quickvib-core.workspace = true
+quickvib-device.workspace = true
+quickvib-measure.workspace = true
+quickvib-project.workspace = true
+quickvib-scpi.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

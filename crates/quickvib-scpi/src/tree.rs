@@ -25,14 +25,17 @@ enum Form {
     Both,
 }
 
+/// Turns the arguments of a matched header into a [`Command`].
+type Builder = fn(&[Argument]) -> Result<Command, ParseError>;
+
 /// One entry in the command tree.
 struct Entry {
     path: &'static [Mnemonic],
     form: Form,
     /// Builder for the command form, given the arguments.
-    command: Option<fn(&[Argument]) -> Result<Command, ParseError>>,
+    command: Option<Builder>,
     /// Builder for the query form.
-    query: Option<fn(&[Argument]) -> Result<Command, ParseError>>,
+    query: Option<Builder>,
 }
 
 const fn m(short: &'static str, long: &'static str) -> Mnemonic {
@@ -62,7 +65,7 @@ macro_rules! plain {
                 Err(ParseError::command("command takes no arguments"))
             }
         }
-        Some(build as fn(&[Argument]) -> Result<Command, ParseError>)
+        Some(build as Builder)
     }};
 }
 
