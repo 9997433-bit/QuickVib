@@ -324,6 +324,9 @@ lives at `samples/Test.proj`.
 | `device.unit` | *(required)* | `"velocity_um_s"`, `"displacement_um"`, `"acceleration_m_s2"` |
 | `device.allowedPeers` | `[]` | Empty accepts any inbound peer |
 | `device.sdkPath` | `null` | Directory probed for the M300 SDK (M300 backend only) |
+| `device.lpfHz` | `null` | Low-pass cutoff; `null` tracks Nyquist (`sampleRateHz / 2`) |
+| `device.highPassHz` | `0` | High-pass cutoff; `0` disables. Must be below the low-pass cutoff |
+| `device.velocityRange` / `.displacementRange` / `.accelerationRange` | `1000` / `1000` / `100` | Measuring range in µm/s, µm, m/s²; the one matching `device.unit` applies |
 | `recording.durationSeconds` | *(required)* | `(0, 3600]` |
 | `recording.timeoutMultiplier` | `2.0` | Watchdog = duration × this + 1 s |
 | `recording.maxCaptureBytes` | `536870912` | `INIT` rejects larger runs with `-222` |
@@ -332,6 +335,7 @@ lives at `samples/Test.proj`.
 | `export.format` / `.directory` / `.includeHeader` | `"CSV"` / `"."` / `true` | Export defaults |
 | `identity.*` | see above | The four `*IDN?` fields, so an existing UTS ID check can be satisfied |
 | `server.maxSessions` | `8` | Concurrent SCPI session cap |
+| `server.scpiPort` | `5025` | SCPI listen port stored in the project; `--scpi-port` overrides |
 | `mock.signal.*` | one 100 Hz component | Sine components, Gaussian noise σ, and PRNG seed |
 
 The most recently loaded or saved project is remembered (`%LOCALAPPDATA%\QuickVib\` on Windows,
@@ -886,6 +890,9 @@ IDLE ──INIT──▶ ARMED ──首个采样──▶ RECORDING ──收�
 | `device.unit` | *(必填)* | `"velocity_um_s"`、`"displacement_um"`、`"acceleration_m_s2"` |
 | `device.allowedPeers` | `[]` | 为空表示接受任意来源地址 |
 | `device.sdkPath` | `null` | M300 SDK 的查找目录（仅 M300 后端） |
+| `device.lpfHz` | `null` | 低通截止频率；`null` 表示跟随奈奎斯特频率（`sampleRateHz / 2`） |
+| `device.highPassHz` | `0` | 高通截止频率；`0` 表示关闭。必须小于低通截止频率 |
+| `device.velocityRange` / `.displacementRange` / `.accelerationRange` | `1000` / `1000` / `100` | 量程，单位分别为 µm/s、µm、m/s²；实际生效的是与 `device.unit` 对应的那一个 |
 | `recording.durationSeconds` | *(必填)* | `(0, 3600]` |
 | `recording.timeoutMultiplier` | `2.0` | 看门狗时限 = 时长 × 该值 + 1 秒 |
 | `recording.maxCaptureBytes` | `536870912` | 超过该上限的采集会在 `INIT` 时以 `-222` 拒绝 |
@@ -894,6 +901,7 @@ IDLE ──INIT──▶ ARMED ──首个采样──▶ RECORDING ──收�
 | `export.format` / `.directory` / `.includeHeader` | `"CSV"` / `"."` / `true` | 导出默认值 |
 | `identity.*` | 见上 | `*IDN?` 的四个字段，可满足既有 UTS 的标识校验 |
 | `server.maxSessions` | `8` | 并发 SCPI 会话上限 |
+| `server.scpiPort` | `5025` | 工程中记录的 SCPI 监听端口；`--scpi-port` 优先 |
 | `mock.signal.*` | 一个 100 Hz 分量 | 正弦分量、高斯噪声 σ、随机数种子 |
 
 最近一次加载或保存的工程路径会被记录（Windows 上为 `%LOCALAPPDATA%\QuickVib\`，Unix 上为

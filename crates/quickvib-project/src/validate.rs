@@ -72,8 +72,14 @@ pub fn validate(project: &Project) -> Result<(), ProjectError> {
 
     for (field, range) in [
         ("device.velocityRange", project.device.velocity_range),
-        ("device.displacementRange", project.device.displacement_range),
-        ("device.accelerationRange", project.device.acceleration_range),
+        (
+            "device.displacementRange",
+            project.device.displacement_range,
+        ),
+        (
+            "device.accelerationRange",
+            project.device.acceleration_range,
+        ),
     ] {
         if !range.is_finite() || range <= 0.0 {
             return Err(ProjectError::invalid(
