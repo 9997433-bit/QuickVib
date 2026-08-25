@@ -25,7 +25,12 @@ fn two_sessions_share_one_instrument_model() {
     assert_eq!(first.query("CONF:REC:DUR?").unwrap(), "0.020");
     assert_eq!(second.query("CONF:REC:DUR?").unwrap(), "0.020");
 
+    // Same ordering hazard, and `INIT` answers nothing to order against: until the session
+    // that issued it has observed the state leave IDLE, `REC:WAIT?` on the other session is
+    // entitled to report that no run was ever started.
     second.command("INIT").unwrap();
+    assert_ne!(second.query("REC:STAT?").unwrap(), "IDLE");
+
     assert_eq!(first.query("REC:WAIT?").unwrap(), "1");
     assert_eq!(first.query("TRAC:POIN?").unwrap(), "20");
     assert_eq!(second.query("TRAC:POIN?").unwrap(), "20");
