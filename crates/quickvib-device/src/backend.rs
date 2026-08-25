@@ -173,6 +173,29 @@ pub trait DeviceBackend: Send {
     ///
     /// The default is `None`, which is the right answer for a backend whose `stream` polls
     /// the cancellation token itself.
+    ///
+    /// # Contract
+    ///
+    /// The engine takes the handle once per run and registers it on that run's token, so an
+    /// implementation must hold to three rules:
+    ///
+    /// * **It runs at the end of *every* run, not only aborted ones.** A successful run
+    ///   cancels its own token to release the watchdog thread, which fires the hook just as
+    ///   `ABOR` would. Arriving here therefore says nothing about whether the capture
+    ///   succeeded.
+    /// * **It must be idempotent and safe when idle.** `ABOR` invokes
+    ///   [`DeviceBackend::stop`] and cancels the token, so both paths can run for one run;
+    ///   the handle may also fire before `stream` has parked, or after it has returned.
+    /// * **It must not permanently disable the transport.** The handle may only interrupt
+    ///   the *current* read — the next [`DeviceBackend::stream`] on the same open transport
+    ///   has to work without an intervening [`DeviceBackend::open`]. Setting a flag that
+    ///   `stream` clears on entry satisfies this; `TcpStream::shutdown` on a persistent link
+    ///   does not, and a backend that can only stop that way should either reconnect
+    ///   transparently in `stream` or return `None` here and poll the token instead.
+    ///
+    /// The handle is called from arbitrary threads — a SCPI session, the watchdog, or the
+    /// reader thread itself — so it must not block and must not need the backend's `&mut`
+    /// state.
     fn stop_handle(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         None
     }

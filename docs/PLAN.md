@@ -254,11 +254,21 @@ stateDiagram-v2
     Aborted --> Armed: INIT (new run)
     Complete --> Idle: *RST
     Aborted --> Idle: *RST
+    Complete --> Idle: project adopted (Invalidate)
+    Aborted --> Idle: project adopted (Invalidate)
+    Idle --> Idle: project adopted (Invalidate)
 ```
 
 `REC:STAT?` maps directly onto these states (`IDLE|ARMED|RECORDING|COMPLETE|ABORTED`). Entering
 `Armed` for a new run discards the previous capture buffer and measurements, so `FETC?` between
 `INIT` and completion returns `-230` rather than stale data from the prior run.
+
+The `Invalidate` edge is the out-of-band capture discard: adopting a project (`MMEM:LOAD:STAT`,
+`MMEM:LOAD:AUTO`, the GUI's *Apply*) drops the stored capture, and the terminal run status goes with
+it, so `REC:STAT?` can never answer `COMPLETE` while `FETC?` answers `-230`. It exists only out of
+the settled states; from `Armed`/`Recording` it is rejected, which is the `-221` a load attempted
+mid-run reports. The in-flight check and the state write happen under one lock hold, so a load that
+races `INIT` is refused rather than replacing the settings the run in flight is working from.
 
 The state enum lives in `quickvib-engine` and transitions go through one `fn transition(&mut self,
 ev: Event) -> Result<State, EngineError>`, so illegal edges are a compile-time-shaped `match` rather
@@ -703,8 +713,8 @@ named in the brief; see Q8 in §21.
 | --- | --- | --- | --- |
 | `*IDN?` | Query | `QuickVib,M300-SCPI,<serial>,<fw>` | Four comma-separated fields: manufacturer, model, serial, firmware/app version. All four are **configurable** via the project's `identity` block so the UTS's expected-ID check can be satisfied. Serial defaults to the device serial when connected, else `0`. Version default comes from `env!("CARGO_PKG_VERSION")`. |
 | `*RST` | Command | — | Abort any recording, discard capture data, reset duration and format to the loaded project's values, keep the loaded project, clear the error queue. Returns to `Idle`. |
-| `*CLS` | Command | — | Clear the error queue and status/event registers. Does not touch data or state. |
-| `*OPC` | Command | — | Sets the OPC bit in the standard event register once all pending overlapped operations (i.e. an active recording) complete. |
+| `*CLS` | Command | — | Clear the error queue and the pending `*OPC` request together with the OPC bit. Does not touch data or state. The status byte and standard event register are **not implemented** — there is no `*STB?`/`*ESR?`, so "clearing the registers" reduces to those two items (§21.2 item 16). |
+| `*OPC` | Command | — | Arms the OPC bit for when all pending overlapped operations (i.e. an active recording) complete. The bit is engine-internal bookkeeping: without `*ESR?` a UTS observes completion through `*OPC?`, `REC:WAIT?` or `#REC:DONE`. |
 | `*OPC?` | Query | `1` | Blocks until pending operations complete, then returns `1`. Bounded by the run watchdog, so it cannot hang past `duration × multiplier + 1 s`. |
 | `SYST:ERR?` | Query | `<code>,"<message>"` | Pops the oldest entry from the FIFO error queue (`VecDeque`, bounded). Returns `0,"No error"` when empty. Queue depth 32; overflow replaces the last entry with `-350,"Queue overflow"`. |
 
@@ -1464,6 +1474,11 @@ specifically:
     `SetConsoleCtrlHandler` shim or a signal crate (`ctrlc`), both of which the current stance avoids
     (§7.1). Is abrupt termination on Ctrl-C acceptable for a UTS-launched process, given that
     `ABOR` + socket close is the normal shutdown path?
+16. **IEEE 488.2 status registers.** `*STB?`, `*ESR?`, `*ESE`/`*SRE` are not implemented: the OPC bit
+    is engine-internal and the error queue is read with `SYST:ERR?`, so `*CLS` has only those two
+    things to clear (§8.1). Does the UTS contract require the register model, or are `*OPC?`,
+    `REC:WAIT?` and `#REC:DONE` sufficient? Adding the registers is additive and touches only
+    `quickvib-engine`'s status bookkeeping plus the parse tree.
 
 ---
 

@@ -23,6 +23,9 @@ pub enum Refusal {
     PeerNotAllowed,
     /// A device connection is already live.
     AlreadyConnected,
+    /// The accepted socket could not be put into the blocking mode the framer needs. Kept
+    /// distinct from [`Refusal::PeerNotAllowed`] so the log says what actually went wrong.
+    SocketError,
 }
 
 /// Shared, observable state of the device link.
@@ -203,9 +206,11 @@ impl InboundDeviceServer {
             on_refused(peer, Refusal::AlreadyConnected);
             return;
         }
+        // The listener is non-blocking so the accept loop can poll for cancellation; the
+        // accepted stream inherits that on some platforms and the framer needs blocking reads.
         if stream.set_nonblocking(false).is_err() {
             let _ = stream.shutdown(Shutdown::Both);
-            on_refused(peer, Refusal::PeerNotAllowed);
+            on_refused(peer, Refusal::SocketError);
             return;
         }
 
@@ -276,17 +281,46 @@ mod tests {
         })
     }
 
+    /// Every refusal the accept loop reported, in order, with its reason.
+    #[derive(Debug, Default)]
+    struct Refusals(Mutex<Vec<Refusal>>);
+
+    impl Refusals {
+        fn reasons(&self) -> Vec<Refusal> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+
+        fn count(&self) -> usize {
+            self.0.lock().unwrap_or_else(PoisonError::into_inner).len()
+        }
+    }
+
     fn spawn_server(
         server: InboundDeviceServer,
         cancel: CancelToken,
         handler: Arc<dyn Fn(TcpStream, SocketAddr) + Send + Sync>,
-        refusals: Arc<AtomicUsize>,
+        refusals: Arc<Refusals>,
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
-            server.run(&cancel, handler, &|_peer, _why| {
-                refusals.fetch_add(1, Ordering::SeqCst);
+            server.run(&cancel, handler, &|_peer, why| {
+                refusals
+                    .0
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(why);
             });
         })
+    }
+
+    /// Wait, bounded, for the accept loop to report a refusal.
+    fn wait_for_refusal(refusals: &Refusals) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while refusals.count() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]
@@ -303,7 +337,7 @@ mod tests {
 
         let cancel = CancelToken::new();
         let bytes = Arc::new(AtomicUsize::new(0));
-        let refusals = Arc::new(AtomicUsize::new(0));
+        let refusals = Arc::new(Refusals::default());
         let join = spawn_server(
             server,
             cancel.clone(),
@@ -321,7 +355,7 @@ mod tests {
 
         assert!(!state.wait_disconnected(Duration::from_secs(5)));
         assert_eq!(bytes.load(Ordering::SeqCst), 4);
-        assert_eq!(refusals.load(Ordering::SeqCst), 0);
+        assert_eq!(refusals.reasons(), Vec::new());
 
         cancel.cancel();
         join.join().unwrap();
@@ -347,7 +381,7 @@ mod tests {
 
         let cancel = CancelToken::new();
         let bytes = Arc::new(AtomicUsize::new(0));
-        let refusals = Arc::new(AtomicUsize::new(0));
+        let refusals = Arc::new(Refusals::default());
         let join = spawn_server(
             server,
             cancel.clone(),
@@ -364,11 +398,8 @@ mod tests {
         let read = second.read(&mut buf);
         assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while refusals.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(refusals.load(Ordering::SeqCst), 1);
+        wait_for_refusal(&refusals);
+        assert_eq!(refusals.reasons(), vec![Refusal::AlreadyConnected]);
         assert!(state.is_connected(), "the first link must be undisturbed");
 
         drop(first);
@@ -385,7 +416,7 @@ mod tests {
         let state = server.state();
 
         let cancel = CancelToken::new();
-        let refusals = Arc::new(AtomicUsize::new(0));
+        let refusals = Arc::new(Refusals::default());
         let join = spawn_server(
             server,
             cancel.clone(),
@@ -394,11 +425,8 @@ mod tests {
         );
 
         let _client = TcpStream::connect(addr).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while refusals.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(refusals.load(Ordering::SeqCst), 1);
+        wait_for_refusal(&refusals);
+        assert_eq!(refusals.reasons(), vec![Refusal::PeerNotAllowed]);
         assert!(!state.is_connected());
 
         cancel.cancel();
@@ -436,7 +464,7 @@ mod tests {
             server,
             cancel.clone(),
             draining_handler(Arc::new(AtomicUsize::new(0))),
-            Arc::new(AtomicUsize::new(0)),
+            Arc::new(Refusals::default()),
         );
         cancel.cancel();
         join.join().unwrap();

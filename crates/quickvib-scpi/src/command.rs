@@ -80,32 +80,6 @@ pub enum Command {
     SystemVersionQuery,
 }
 
-impl Command {
-    /// Whether this command produces a response line.
-    #[must_use]
-    pub const fn is_query(&self) -> bool {
-        matches!(
-            self,
-            Self::Idn
-                | Self::OpcQuery
-                | Self::SystemErrorQuery
-                | Self::MemoryLoadAutoQuery
-                | Self::ConfigureDurationQuery
-                | Self::FormatQuery
-                | Self::RecordStateQuery
-                | Self::RecordWaitQuery
-                | Self::Fetch
-                | Self::TracePointsQuery
-                | Self::CalculatePeak
-                | Self::CalculateRms
-                | Self::CalculatePeakToPeak
-                | Self::CalculateAll
-                | Self::SystemDeviceConnectedQuery
-                | Self::SystemVersionQuery
-        )
-    }
-}
-
 /// Why a line could not be turned into commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -195,13 +169,5 @@ mod tests {
             ParseError::illegal_parameter("XML").scpi_error(),
             ScpiError::IllegalParameterValue
         );
-    }
-
-    #[test]
-    fn queries_are_classified_correctly() {
-        assert!(Command::Idn.is_query());
-        assert!(Command::CalculateAll.is_query());
-        assert!(!Command::Initiate.is_query());
-        assert!(!Command::Format(ExportFormat::Csv).is_query());
     }
 }

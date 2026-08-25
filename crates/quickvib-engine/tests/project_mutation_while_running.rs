@@ -18,24 +18,6 @@ const PROJECT: &str = r#"{
     "export": { "format": "csv" }
 }"#;
 
-trait IntoAdoptResult {
-    fn into_adopt_result(self) -> Result<(), ScpiError>;
-}
-
-// This compatibility implementation lets the regression compile against the pre-fix API,
-// where `adopt_project` returned `()`, and fail as an assertion rather than a type error.
-impl IntoAdoptResult for () {
-    fn into_adopt_result(self) -> Result<(), ScpiError> {
-        Ok(())
-    }
-}
-
-impl IntoAdoptResult for Result<(), ScpiError> {
-    fn into_adopt_result(self) -> Result<(), ScpiError> {
-        self
-    }
-}
-
 fn stalled_engine() -> Arc<Engine> {
     let clock: Arc<dyn Clock> = Arc::new(TestClock::at_epoch());
     let mut backend = MockBackend::new(Arc::clone(&clock)).with_fault(MockFault::Stall);
@@ -54,7 +36,6 @@ fn stalled_engine() -> Arc<Engine> {
     });
     engine
         .adopt_project(Project::from_json_str(PROJECT).unwrap(), None)
-        .into_adopt_result()
         .unwrap();
     engine
 }
@@ -77,12 +58,10 @@ fn adopt_project_rejects_active_run_without_clobbering_plan() {
     let engine = stalled_engine();
     engine.start_recording().unwrap();
 
-    let result = engine
-        .adopt_project(
-            replacement_project(),
-            Some(PathBuf::from("replacement.proj")),
-        )
-        .into_adopt_result();
+    let result = engine.adopt_project(
+        replacement_project(),
+        Some(PathBuf::from("replacement.proj")),
+    );
     let observed = (
         engine.duration_seconds(),
         engine.format(),

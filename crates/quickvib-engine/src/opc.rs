@@ -8,6 +8,11 @@
 pub struct Opc {
     operation_in_progress: bool,
     requested: bool,
+    /// The OPC bit is **not SCPI-visible**: the standard event register is not implemented,
+    /// so there is no `*ESR?` (nor `*STB?`) to read it back with. A UTS observes completion
+    /// through `*OPC?`, `REC:WAIT?` or the `#REC:DONE` notification instead. The bit is kept
+    /// because `*OPC` must still be accepted and because the register model is an additive
+    /// change if the UTS contract ever asks for it (`docs/PLAN.md` 21.2 item 16).
     bit_set: bool,
 }
 
@@ -53,6 +58,8 @@ impl Opc {
     }
 
     /// Whether the OPC bit in the standard event register is set.
+    ///
+    /// No SCPI command reads this — see the note on the field itself.
     #[must_use]
     pub const fn bit(&self) -> bool {
         self.bit_set

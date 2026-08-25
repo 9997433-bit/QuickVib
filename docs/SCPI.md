@@ -13,8 +13,8 @@ This page is the operator-facing summary; `PLAN.md` §8–§9 remains the normat
 | --- | --- | --- | --- |
 | `*IDN?` | Query | `QuickVib,M300-SCPI,<serial>,<fw>` | All four fields come from the project's `identity` block; serial falls back to the connected device's. |
 | `*RST` | Command | — | Abort any run, discard the capture, restore the project's duration and format, clear the error queue, return to `IDLE`. |
-| `*CLS` | Command | — | Clear the error queue only. |
-| `*OPC` | Command | — | Set the OPC bit once the active run finishes. |
+| `*CLS` | Command | — | Clear the error queue and any armed `*OPC` request. Leaves the capture, the state and the loaded project alone. |
+| `*OPC` | Command | — | Arm the OPC bit for when the active run finishes. There is no `*ESR?`/`*STB?`, so wait with `*OPC?`, `REC:WAIT?` or `#REC:DONE`. |
 | `*OPC?` | Query | `1` | Blocks until the run finishes; bounded by the run watchdog. |
 | `SYST:ERR?` | Query | `<code>,"<message>"` | Oldest queued error, `0,"No error"` when empty. `SYST:ERR:NEXT?` is an alias. |
 | `SYST:VERS?` | Query | `1999.0` | SCPI standard version. |

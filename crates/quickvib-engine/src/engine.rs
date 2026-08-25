@@ -932,7 +932,9 @@ impl Engine {
             guard.notifying = true;
             let cancel = guard.cancel.clone();
             drop(guard);
-            // Release the watchdog thread, which is parked on this token.
+            // Release the watchdog thread, which is parked on this token. This runs the
+            // backend's stop hook on a successful run too, which is why `stop_handle` is
+            // documented as idempotent and forbidden from disabling the transport for good.
             cancel.cancel();
             (notification, summary)
         };
