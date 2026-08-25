@@ -34,14 +34,14 @@ Round 1 的 fable-A 以 **云端子代理**（`environment=cloud`）派出，模
 
 ## Round 1 派发清单
 
-| ID | 简称 | slug | 环境 | 主攻 |
-| --- | --- | --- | --- | --- |
-| R1-fable-A | fable | `claude-fable-5-thinking-xhigh` | **cloud** | 相对 PLAN 的架构完备性 / 需求追溯 / SOTA 差距 |
-| R1-fable-B | fable | `claude-fable-5-thinking-xhigh` | local | 多维代码审计（并发、SCPI 语义、安全、API） |
-| R1-opus-A | opus-fast | `claude-opus-5-thinking-high-fast` | local | 修复 `adopt_project` COMPLETE/`FETC? -230` 语义 |
-| R1-opus-B | opus-fast | `claude-opus-5-thinking-high-fast` | local | 非 engine 路径的缺陷与小优化（UI/project/measure） |
-| R1-gpt-A | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | `cargo test` / clippy / 基线探针 |
-| R1-gpt-B | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | 边界与回归测试（Apply+FETC、会话、abort） |
+| ID | 简称 | slug | 环境 | Task ID | 主攻 |
+| --- | --- | --- | --- | --- | --- |
+| R1-fable-A | fable | `claude-fable-5-thinking-xhigh` | **cloud** | `bc-11ec5583-0d8c-55cf-b8a5-e09f477807b8` | 相对 PLAN 的架构完备性 / 需求追溯 / SOTA 差距 |
+| R1-fable-B | fable | `claude-fable-5-thinking-xhigh` | local | `bc-80a40b03-503a-557e-b911-827935acae8f` | 多维代码审计（并发、SCPI 语义、安全、API） |
+| R1-opus-A | opus-fast | `claude-opus-5-thinking-high-fast` | local | `bc-88164ac1-020d-5c40-8a1c-d7a4cf42f11c` | 修复 `adopt_project` COMPLETE/`FETC? -230` 语义 |
+| R1-opus-B | opus-fast | `claude-opus-5-thinking-high-fast` | local | `bc-61b9f271-ce1a-56df-b671-787fc7e8cc99` | 非 engine 路径的缺陷与小优化（UI/project/measure） |
+| R1-gpt-A | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | `bc-78bd0f81-a1e9-5615-89ab-1a2577a5b3ad` | `cargo test` / clippy / 基线探针 |
+| R1-gpt-B | gpt-sol | `gpt-5.6-sol-xhigh-fast` | local | `bc-a6a61474-2c9e-5d4a-b588-33a7e5c80d6a` | 边界与回归测试（Apply+FETC、会话、abort） |
 
 ## 产出目录
 
