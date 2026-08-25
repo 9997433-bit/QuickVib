@@ -229,6 +229,9 @@ dependencies = [
 [[package]]
 name = "quickvib-scpi"
 version = "1.0.0"
+dependencies = [
+ "quickvib-core",
+]
 
 [[package]]
 name = "quickvib-testkit"
