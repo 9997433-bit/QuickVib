@@ -45,15 +45,15 @@ impl Palette {
     pub const BAD: Color32 = Color32::from_rgb(0xE2, 0x6D, 0x6D);
 }
 
-/// Height of the title bar, and of the toolbar under it.
-pub const TITLE_BAR_HEIGHT: f32 = 52.0;
 /// Width of the instrument column on the right.
 pub const INSTRUMENT_WIDTH: f32 = 372.0;
 /// Width of the label column in every configuration card, so labels line up down the whole
 /// window rather than per card.
 pub const LABEL_WIDTH: f32 = 116.0;
-/// Width of an editable field. One number, so nothing in the form is ragged.
+/// Width of a numeric field. One number, so nothing in the form is ragged.
 pub const FIELD_WIDTH: f32 = 168.0;
+/// Width of a field holding a name or a path, which needs more room than a number.
+pub const WIDE_FIELD_WIDTH: f32 = 300.0;
 
 /// Install the font, the palette and the spacing. Called once, when the window is created.
 pub fn install(ctx: &egui::Context) {
@@ -129,6 +129,9 @@ pub fn card<R>(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
         .rounding(Rounding::same(8.0))
         .inner_margin(Margin::symmetric(14.0, 12.0))
         .show(ui, |ui| {
+            // Cards that shrink to their content leave a ragged right edge down the column,
+            // which is exactly the "pile of settings" look the panel is trying not to have.
+            ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 // A short accent rule instead of a bigger font: the eye finds the group
                 // without the type size shouting.
@@ -151,7 +154,7 @@ pub fn field_grid<R>(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui) -> R) -> R
         .num_columns(3)
         .spacing(Vec2::new(12.0, 9.0))
         .min_col_width(LABEL_WIDTH)
-        .max_col_width(220.0)
+        .max_col_width(WIDE_FIELD_WIDTH + 8.0)
         .show(ui, add)
         .inner
 }
@@ -168,9 +171,14 @@ pub fn hint(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).size(12.0).color(Palette::MUTED));
 }
 
-/// A single-line editor of the one width every field in the window uses.
+/// A single-line editor of the one width every numeric field in the window uses.
 pub fn text_field(ui: &mut Ui, value: &mut String) -> Response {
     ui.add(egui::TextEdit::singleline(value).desired_width(FIELD_WIDTH))
+}
+
+/// A single-line editor for a name or a path.
+pub fn wide_text_field(ui: &mut Ui, value: &mut String) -> Response {
+    ui.add(egui::TextEdit::singleline(value).desired_width(WIDE_FIELD_WIDTH))
 }
 
 /// A read-only value shown where an editable field would be — a fact, not a setting.
@@ -203,8 +211,14 @@ pub fn led(ui: &mut Ui, color: Color32) {
     ui.painter().circle_filled(rect.center(), 4.5, color);
 }
 
-/// A big coloured button — the two that start and stop a capture.
-pub fn action_button(ui: &mut Ui, text: &str, fill: Color32, enabled: bool) -> Response {
+/// A big coloured button of a given width — the two that start and stop a capture.
+pub fn action_button(
+    ui: &mut Ui,
+    text: &str,
+    fill: Color32,
+    enabled: bool,
+    width: f32,
+) -> Response {
     let button = egui::Button::new(RichText::new(text).size(15.0).strong().color(if enabled {
         Color32::WHITE
     } else {
@@ -216,6 +230,6 @@ pub fn action_button(ui: &mut Ui, text: &str, fill: Color32, enabled: bool) -> R
         Color32::from_rgb(0x23, 0x2B, 0x36)
     })
     .rounding(Rounding::same(6.0))
-    .min_size(Vec2::new(0.0, 34.0));
+    .min_size(Vec2::new(width, 36.0));
     ui.add_enabled(enabled, button)
 }

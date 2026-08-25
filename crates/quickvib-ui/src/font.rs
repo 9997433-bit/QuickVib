@@ -151,6 +151,7 @@ mod tests {
             1.0,
             Some(SampleUnit::AccelerationMPerSec2),
         ));
+        strings.push(i18n::CHROME_PUNCTUATION.to_owned());
         strings
     }
 

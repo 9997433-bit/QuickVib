@@ -167,7 +167,7 @@ impl QuickVibApp {
     fn finish_prompt(&mut self, prompt: Prompt) {
         let path = self.prompt_path.trim().to_owned();
         if path.is_empty() {
-            self.notice = Some(Notice::failed(self.t(Label::NoticeEmptyPath)));
+            self.notice = Some(Notice::failed_label(Label::NoticeEmptyPath));
             return;
         }
         let lang = self.lang;
@@ -208,16 +208,15 @@ impl QuickVibApp {
 
     fn title_bar(&mut self, ctx: &egui::Context, status: &StatusSnapshot) {
         egui::TopBottomPanel::top("title-bar")
-            .exact_height(theme::TITLE_BAR_HEIGHT)
             .frame(
                 egui::Frame::none()
                     .fill(Palette::CHROME)
-                    .inner_margin(egui::Margin::symmetric(14.0, 6.0)),
+                    .inner_margin(egui::Margin::symmetric(14.0, 8.0)),
             )
             .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
+                ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.add_space(2.0);
+                        ui.spacing_mut().item_spacing.y = 1.0;
                         ui.label(
                             RichText::new("QuickVib")
                                 .size(20.0)
@@ -273,7 +272,7 @@ impl QuickVibApp {
 
     fn project_identity(&self, ui: &mut egui::Ui, status: &StatusSnapshot) {
         ui.vertical(|ui| {
-            ui.add_space(2.0);
+            ui.spacing_mut().item_spacing.y = 1.0;
             let name = if status.project_name.is_empty() {
                 self.t(Label::LabelUnsavedProject).to_owned()
             } else {
@@ -305,15 +304,27 @@ impl QuickVibApp {
             .stroke(egui::Stroke::new(1.0, Palette::EDGE))
             .inner_margin(egui::Margin::symmetric(4.0, 3.0))
             .show(ui, |ui| {
-                for lang in [Lang::Zh, Lang::En] {
-                    let selected = self.lang == lang;
-                    if ui
-                        .selectable_label(selected, RichText::new(lang.endonym()).size(13.0))
-                        .clicked()
-                    {
-                        self.set_lang(&ctx, lang);
-                    }
-                }
+                // The title bar lays its contents out from the right, and egui propagates
+                // that direction into nested rows — so the switch asks for a region of its
+                // own size and its own direction, and reads 中文 then EN either way.
+                ui.allocate_ui_with_layout(
+                    Vec2::new(76.0, 20.0),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        for lang in [Lang::Zh, Lang::En] {
+                            let selected = self.lang == lang;
+                            if ui
+                                .selectable_label(
+                                    selected,
+                                    RichText::new(lang.endonym()).size(13.0),
+                                )
+                                .clicked()
+                            {
+                                self.set_lang(&ctx, lang);
+                            }
+                        }
+                    },
+                );
             });
     }
 
@@ -349,7 +360,7 @@ impl QuickVibApp {
                     if ui.button(self.t(Label::ActionRevert)).clicked() {
                         self.controller.revert();
                         self.field_errors.clear();
-                        self.notice = Some(Notice::ok(self.t(Label::NoticeReverted)));
+                        self.notice = Some(Notice::ok_label(Label::NoticeReverted));
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -373,7 +384,7 @@ impl QuickVibApp {
     }
 
     fn file_menu(&mut self, ui: &mut egui::Ui) {
-        ui.menu_button(format!("{} ▾", self.t(Label::MenuFile)), |ui| {
+        ui.menu_button(format!("{} ▼", self.t(Label::MenuFile)), |ui| {
             if ui.button(self.t(Label::ActionOpen)).clicked() {
                 self.prompt = Some(Prompt::Open);
                 ui.close_menu();
@@ -420,11 +431,11 @@ impl QuickVibApp {
         theme::card(ui, lang.t(Label::SectionProject), |ui| {
             theme::field_grid(ui, "project-grid", |ui| {
                 theme::label(ui, lang.t(Label::FieldProjectName));
-                theme::text_field(ui, &mut self.controller.form_mut().name);
+                theme::wide_text_field(ui, &mut self.controller.form_mut().name);
                 ui.end_row();
 
                 theme::label(ui, lang.t(Label::FieldDescription));
-                theme::text_field(ui, &mut self.controller.form_mut().description);
+                theme::wide_text_field(ui, &mut self.controller.form_mut().description);
                 ui.end_row();
             });
         });
@@ -634,7 +645,7 @@ impl QuickVibApp {
                 ui.end_row();
 
                 theme::label(ui, lang.t(Label::FieldExportDirectory));
-                theme::text_field(ui, &mut self.controller.form_mut().export_directory);
+                theme::wide_text_field(ui, &mut self.controller.form_mut().export_directory);
                 theme::hint(ui, lang.t(Label::HintExportDirectory));
                 ui.end_row();
 
@@ -755,26 +766,20 @@ impl QuickVibApp {
         let width = (ui.available_width() - 8.0) / 2.0;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-            ui.scope(|ui| {
-                ui.set_width(width);
-                if theme::action_button(ui, lang.t(Label::ActionStart), Palette::OK, !running)
-                    .clicked()
-                {
-                    self.notice = Some(match self.controller.start() {
-                        Ok(()) => Notice::ok(lang.t(Label::NoticeStarted)),
-                        Err(error) => Notice::failed(error.localized(lang)),
-                    });
-                }
-            });
-            ui.scope(|ui| {
-                ui.set_width(width);
-                if theme::action_button(ui, lang.t(Label::ActionStop), Palette::LIVE, running)
-                    .clicked()
-                {
-                    self.controller.stop();
-                    self.notice = Some(Notice::ok(lang.t(Label::NoticeStopRequested)));
-                }
-            });
+            if theme::action_button(ui, lang.t(Label::ActionStart), Palette::OK, !running, width)
+                .clicked()
+            {
+                self.notice = Some(match self.controller.start() {
+                    Ok(()) => Notice::ok_label(Label::NoticeStarted),
+                    Err(error) => Notice::failed(error.localized(lang)),
+                });
+            }
+            if theme::action_button(ui, lang.t(Label::ActionStop), Palette::LIVE, running, width)
+                .clicked()
+            {
+                self.controller.stop();
+                self.notice = Some(Notice::ok_label(Label::NoticeStopRequested));
+            }
         });
     }
 
@@ -834,24 +839,28 @@ impl QuickVibApp {
     fn export_row(&mut self, ui: &mut egui::Ui, status: &StatusSnapshot) {
         let lang = self.lang;
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.export_name)
-                    .desired_width(ui.available_width() - 108.0)
-                    .hint_text(lang.t(Label::FieldFileName)),
-            );
-            if ui
-                .add_enabled(
-                    status.measurements.is_some(),
-                    egui::Button::new(lang.t(Label::ActionExport)),
-                )
-                .clicked()
-            {
-                let name = self.export_name.clone();
-                self.notice = Some(match self.controller.export(&name) {
-                    Ok(path) => Notice::ok(i18n::wrote(lang, &path)),
-                    Err(error) => Notice::failed(error.localized(lang)),
-                });
-            }
+            // The button is sized by its own label — which is longer in English — and the
+            // file name takes whatever is left, so neither is ever clipped.
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add_enabled(
+                        status.measurements.is_some(),
+                        egui::Button::new(lang.t(Label::ActionExport)),
+                    )
+                    .clicked()
+                {
+                    let name = self.export_name.clone();
+                    self.notice = Some(match self.controller.export(&name) {
+                        Ok(path) => Notice::ok(i18n::wrote(lang, &path)),
+                        Err(error) => Notice::failed(error.localized(lang)),
+                    });
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.export_name)
+                        .desired_width(ui.available_width())
+                        .hint_text(lang.t(Label::FieldFileName)),
+                );
+            });
         });
     }
 
@@ -915,10 +924,18 @@ impl QuickVibApp {
                     ui.separator();
                     match &self.notice {
                         Some(notice) if notice.ok => {
-                            ui.label(RichText::new(&notice.text).size(12.5).color(Palette::OK));
+                            ui.label(
+                                RichText::new(notice.text(lang))
+                                    .size(12.5)
+                                    .color(Palette::OK),
+                            );
                         }
                         Some(notice) => {
-                            ui.label(RichText::new(&notice.text).size(12.5).color(Palette::BAD));
+                            ui.label(
+                                RichText::new(notice.text(lang))
+                                    .size(12.5)
+                                    .color(Palette::BAD),
+                            );
                         }
                         None => {
                             ui.label(

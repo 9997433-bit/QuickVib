@@ -503,6 +503,15 @@ fn trim_number(value: f64) -> String {
     }
 }
 
+/// Punctuation and symbols the window composes its own strings from — the separator between
+/// two readings, the menu arrow, the equals sign in front of a converted unit.
+///
+/// Listed in one place because the embedded font is a subset: the coverage test walks this
+/// string along with the label table, so a decoration the font has no glyph for fails
+/// `cargo test` instead of showing up as a box on the instrument. Anything the window draws
+/// that is not a [`Label`] belongs here.
+pub const CHROME_PUNCTUATION: &str = "·=:▼";
+
 /// File name of the language preference inside the QuickVib state directory.
 pub const LANG_FILE_NAME: &str = "ui-language.txt";
 

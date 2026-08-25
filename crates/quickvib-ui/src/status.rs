@@ -74,12 +74,19 @@ impl StatusSnapshot {
 
 /// A message shown in the window's activity line: the outcome of the last thing the operator
 /// asked for.
+///
+/// A notice that is one of the fixed phrases keeps its [`Label`] rather than its rendering,
+/// so flipping the language switch does not leave a Chinese sentence sitting in an English
+/// status bar. Notices that name a path or a SCPI code are rendered once, in the language
+/// that was showing when they happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     /// Whether the action succeeded.
     pub ok: bool,
-    /// What happened.
+    /// What happened, already rendered.
     pub text: String,
+    /// The label `text` came from, when it came from one.
+    pub label: Option<Label>,
 }
 
 impl Notice {
@@ -89,6 +96,7 @@ impl Notice {
         Self {
             ok: true,
             text: text.into(),
+            label: None,
         }
     }
 
@@ -98,6 +106,36 @@ impl Notice {
         Self {
             ok: false,
             text: text.into(),
+            label: None,
+        }
+    }
+
+    /// A success message that follows the language switch.
+    #[must_use]
+    pub fn ok_label(label: Label) -> Self {
+        Self {
+            ok: true,
+            text: label.zh().to_owned(),
+            label: Some(label),
+        }
+    }
+
+    /// A failure message that follows the language switch.
+    #[must_use]
+    pub fn failed_label(label: Label) -> Self {
+        Self {
+            ok: false,
+            text: label.zh().to_owned(),
+            label: Some(label),
+        }
+    }
+
+    /// The message in `lang`.
+    #[must_use]
+    pub fn text(&self, lang: Lang) -> &str {
+        match self.label {
+            Some(label) => lang.t(label),
+            None => &self.text,
         }
     }
 
@@ -153,5 +191,16 @@ mod tests {
     fn notices_carry_their_outcome() {
         assert!(Notice::ok("saved").ok);
         assert!(!Notice::failed("nope").ok);
+    }
+
+    #[test]
+    fn a_fixed_notice_follows_the_language_switch() {
+        let notice = Notice::ok_label(Label::NoticeStarted);
+        assert_eq!(notice.text(Lang::Zh), "录制已开始");
+        assert_eq!(notice.text(Lang::En), "Recording started");
+
+        // One that names a path was rendered when it happened and stays as it was.
+        let rendered = Notice::ok("已保存 /tmp/a.proj");
+        assert_eq!(rendered.text(Lang::En), "已保存 /tmp/a.proj");
     }
 }
