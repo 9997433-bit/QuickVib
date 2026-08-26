@@ -17,11 +17,11 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// File name of the vendor library.
+/// File name of the vendor library, as it ships in `M300SDK_v1.2.0` under `x64\bin`.
 ///
-/// **TBD** — the exact name and casing must be confirmed against the SDK v1.2.0 distribution
-/// (`docs/M300-NATIVE.md` 1).
-pub const DEFAULT_LIBRARY_NAME: &str = "M300Sdk.dll";
+/// All lowercase, no version suffix (`docs/M300-NATIVE.md` §1). A bench that has the vendor's
+/// MinGW-packaged build instead has `libm300_sdk.dll`, which is why the name is overridable.
+pub const DEFAULT_LIBRARY_NAME: &str = "m300_sdk.dll";
 
 /// Environment variable naming a directory to probe for the vendor library.
 pub const SDK_PATH_ENV: &str = "QUICKVIB_M300_SDK";
@@ -290,11 +290,11 @@ mod tests {
     fn library_name_is_overridable_for_a_renamed_vendor_dll() {
         let found = candidates(&ProbeInputs {
             project_sdk_path: Some(Path::new("/proj")),
-            library_name: Some("M300Sdk_x64.dll"),
+            library_name: Some("libm300_sdk.dll"),
             ..ProbeInputs::default()
         });
-        assert_eq!(found[0].path, Path::new("/proj/M300Sdk_x64.dll"));
-        assert_eq!(found[1].path, Path::new("M300Sdk_x64.dll"));
+        assert_eq!(found[0].path, Path::new("/proj/libm300_sdk.dll"));
+        assert_eq!(found[1].path, Path::new("libm300_sdk.dll"));
     }
 
     #[test]

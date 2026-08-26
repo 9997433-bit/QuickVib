@@ -8,7 +8,7 @@
 //! `docs/PLAN.md` 21.1 are answered in `docs/M300-NATIVE.md`; what is left for Phase 6 is the
 //! backend itself.
 //!
-//! Per D21 there is **no fake or stub `M300Sdk.dll` in this repository**, and none will be added.
+//! Per D21 there is **no fake or stub `m300_sdk.dll` in this repository**, and none will be added.
 //! The ABI is captured as a reviewed contract in `docs/M300-NATIVE.md` and verified by a manual
 //! Windows smoke run against real hardware.
 //!
