@@ -61,7 +61,7 @@ port, and the bundled **`m300-sim`** executable is a stand-in that dials in and 
 | Build | A stable Rust toolchain, edition 2021 (the pinned version is in `rust-toolchain.toml`) |
 | Run (mock backend) | Nothing. The executable is statically linked — no runtime, no redistributable. Any OS: Windows, Linux, macOS |
 | Run the desktop window | A build with `--features gui` and a desktop session. On Linux that means X11 or Wayland plus `libxkbcommon`, which every desktop install already has. No Chinese system font is needed — one is embedded ([§2.1](#fonts)). The window is not needed for, and not built by, the UTS path |
-| Run (real M300) | Windows x64, an M300 vibrometer, and the M300 SDK v1.2.0 installed on the host. The SDK is **not** bundled with QuickVib |
+| Run (real M300) | Windows x64; a build with `--features m300`; an M300 vibrometer; the vendor's `m300_sdk.dll` (SDK v1.2.0) somewhere the loader looks; and the VC++ 2015–2022 redistributable, which that DLL imports. The SDK is **not** bundled with QuickVib — see [§9](#9-mock-backend-vs-real-device) for where the DLL is looked for |
 | Cross-compile a Windows `.exe` from Linux | `gcc-mingw-w64-x86-64` and the `x86_64-pc-windows-gnu` Rust target |
 
 Runtime dependencies are deliberately minimal: `serde` + `serde_json` for the project file,
@@ -687,9 +687,14 @@ directly, so a Chinese string with no glyph behind it fails on a headless CI box
 bench. A separate CI job compiles, lints and tests the window itself, which also needs no display,
 because winit loads X11, Wayland and xkbcommon at run time rather than link time.
 
-`cargo test` covers everything except the native M300 path: the Windows-only `quickvib-m300` crate is
-excluded from the workspace's `default-members`, so a plain build, test, or clippy run on Linux never
-compiles it. That includes the inbound device link end to end —
+`cargo test` covers everything except the parts of the native M300 path that need the vendor DLL.
+`quickvib-m300` is excluded from the workspace's `default-members`, so a plain build, test or clippy
+run on Linux never compiles it — but `cargo test --workspace`, which CI runs, does, and most of the
+crate is platform-neutral on purpose: the vendor's enum ladders, the two-level error mapping, what
+a data callback may believe about the buffer it was handed, and the bounded queue that turns the
+SDK's push into the engine's pull are all exercised on Linux. Only the loader and the backend that
+drives it are Windows-only, and those are compile-checked by the cross-Windows job. Coverage of the
+mock and `tcp` paths includes the inbound device link end to end —
 `crates/quickvib/tests/tcp_backend.rs` records, measures and exports over loopback, and
 `crates/quickvib-sim/tests/pair.rs` spawns the built `m300-sim` binary against an in-process
 instrument, so the pair documented in §9.1 is what CI actually runs.
@@ -849,7 +854,7 @@ UTS（单元测试系统）调用。它是一个自包含的 Windows 可执行�
 | 编译 | Rust stable 工具链，edition 2021（具体版本固定在 `rust-toolchain.toml`） |
 | 运行（模拟后端） | 无需任何依赖。可执行文件为静态链接，不需要运行库或分发包。任意操作系统均可 |
 | 运行桌面窗口 | 需要以 `--features gui` 编译，并有可用的桌面会话。在 Linux 上即 X11 或 Wayland 加 `libxkbcommon`，任何桌面发行版都自带。无需系统安装中文字体——程序已内嵌一份（[§2.1](#字体)）。UTS 路径既不需要窗口，也不会编译它 |
-| 运行（真实 M300） | Windows x64、M300 测振仪，以及主机上已安装的 M300 SDK v1.2.0。SDK **不随本仓库分发** |
+| 运行（真实 M300） | Windows x64；使用 `--features m300` 编译的构建；M300 测振仪；放在加载器能找到的位置的厂商 `m300_sdk.dll`（SDK v1.2.0）；以及该 DLL 所依赖的 VC++ 2015–2022 运行库。SDK **不随本仓库分发**——DLL 的查找顺序见 [§9](#9-模拟后端与真实设备) |
 | 在 Linux 上交叉编译 Windows `.exe` | `gcc-mingw-w64-x86-64` 与 `x86_64-pc-windows-gnu` 目标 |
 
 运行时依赖被刻意压到最少：工程文件解析使用 `serde` + `serde_json`；`libloading` 仅在 Windows 上供
@@ -1420,9 +1425,12 @@ GUI 默认关闭，测试套件也不需要打开它：窗口的视图模型—�
 场。窗口本身由一个独立的 CI job 编译、lint 并测试，同样不需要显示器，因为 winit 是在运行时而非链接时
 加载 X11、Wayland 与 xkbcommon 的。
 
-`cargo test` 覆盖除原生 M300 路径以外的全部代码：仅限 Windows 的 `quickvib-m300` crate 被排除在
-workspace 的 `default-members` 之外，因此在 Linux 上执行普通的 build / test / clippy 时根本不会编译它。
-这其中也包含端到端的设备入站链路：`crates/quickvib/tests/tcp_backend.rs` 在环回地址上完成录制、测量与
+`cargo test` 覆盖原生 M300 路径中除「需要厂商 DLL」以外的全部代码。`quickvib-m300` 被排除在 workspace
+的 `default-members` 之外，因此在 Linux 上执行普通的 build / test / clippy 时不会编译它——但 CI 运行的
+`cargo test --workspace` 会编译，而且该 crate 大部分内容是刻意做成平台无关的：厂商的枚举索引表、双重
+错误码映射、数据回调对缓冲区可以做出的假设，以及把 SDK 的推送转成引擎拉取的有界队列，全都在 Linux 上
+被测试。只有加载器和驱动它的后端是仅限 Windows 的，这两部分由交叉编译 job 做编译检查。模拟与 `tcp`
+两条路径的覆盖包含端到端的设备入站链路：`crates/quickvib/tests/tcp_backend.rs` 在环回地址上完成录制、测量与
 导出，`crates/quickvib-sim/tests/pair.rs` 则直接启动编译好的 `m300-sim` 可执行文件，让它连入进程内的
 仪器——也就是说 §9.1 中记录的这一对进程正是 CI 实际运行的对象。
 
