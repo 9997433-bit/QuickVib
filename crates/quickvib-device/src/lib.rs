@@ -39,7 +39,7 @@ mod error;
 
 pub use backend::{
     ConnectionObserver, DeviceBackend, DeviceCapabilities, DeviceOpenOptions, SampleBatch,
-    StreamOutcome, StreamRequest, BATCH_SAMPLES,
+    StreamOutcome, StreamRequest, BATCH_SAMPLES, DEFAULT_BIND_HOST,
 };
 pub use error::DeviceError;
 pub use framer::{Framer, FramerError, READ_BUFFER_BYTES};
