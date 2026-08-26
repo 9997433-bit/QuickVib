@@ -1919,6 +1919,8 @@ version = "1.0.0"
 dependencies = [
  "bindgen",
  "libloading",
+ "quickvib-core",
+ "quickvib-device",
 ]
 
 [[package]]
