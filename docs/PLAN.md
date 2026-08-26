@@ -1353,9 +1353,22 @@ Linux plus a green `cargo clippy -- -D warnings`. **None of this starts until th
    exit codes. Integration tests over loopback (§17.2). **At the end of this phase the product is
    fully usable against the mock backend** — a UTS can be pointed at it, on Windows or Linux.
 7. **Phase 6 — M300 backend.** `quickvib-m300`: `build.rs` + `bindgen` snapshot, `libloading`
-   resolver, `M300Backend` wiring to the framer and listener, `docs/M300-NATIVE.md`, manual Windows
-   smoke run. Windows-only; compile-checked in the `win-msvc` CI job, not executed in CI.
-   **Gated on the SDK questions in §21.1.**
+   resolver, `M300Backend`, `docs/M300-NATIVE.md`, manual Windows smoke run. Windows-only;
+   compile-checked in the cross-Windows CI job, not executed in CI. **No longer gated**: Q-A, Q-B
+   and Q-C are answered in §21.1 from the vendor's own distribution.
+
+   **In progress.** The ABI contract (`docs/M300-NATIVE.md`), the resolver and the reviewed
+   `bindgen` snapshot have landed, and so has the application-side wiring this phase needs. That
+   wiring is worth stating explicitly because Q-B changed it: `m300_server_create_ex` binds and
+   listens on the device port itself, so with `--backend m300` QuickVib must not start a
+   `DeviceServer` — it would take the port away from the backend it just opened, and the SDK would
+   report `-7 ERR_NETWORK`. `backend_factory` therefore reports whether the backend it opened owns
+   the listener, `App` holds an `Option<DeviceServer>` and skips the accept loop when it does, and
+   `--bind` / `--device-port` are folded into `DeviceOpenOptions` so they can be handed to
+   `m300_server_create_ex` as arguments. The SCPI server is unchanged on every backend, and so is
+   the socket-fed `tcp` path. What remains is `M300Backend` itself — `ffi.rs`, the callback shim,
+   the bounded queue that turns the SDK's push into the trait's pull — and the bench run in
+   `docs/M300-NATIVE.md` §9.
 8. **Phase 7 — Docs and polish.** Bilingual README (§23), `docs/SCPI.md`, a copy-pasteable UTS
    example transcript, release profile tuning (`lto = "thin"`, `codegen-units = 1`, `strip = true`,
    `panic = "unwind"` kept per D27), `cargo deny` gate, tagged release producing the MSVC exe.
@@ -1628,11 +1641,17 @@ scalars, and export CSV or TXT. `cargo test --workspace` and `cargo clippy --wor
 -- -D warnings` are green on Linux, and `cargo build --release --target x86_64-pc-windows-gnu`
 produces the Windows executable.
 
-What is deliberately *not* implemented is **Phase 6**, the M300 native backend: `quickvib-m300`
-holds the crate boundary, the `bindgen` hook and the library resolver, but no `extern "C"`
-declarations and no SDK calls, and there is no fake DLL (D21). Selecting `--backend m300` is a
-startup error rather than a silent fallback to the mock. Phase 6 stays gated on the SDK questions in
-§21.1.
+**Phase 6, the M300 native backend, is in progress and no longer gated** — Q-A, Q-B and Q-C are
+answered in §21.1 from the vendor's `M300SDK_v1.2.0` distribution. What has landed is the ABI
+contract in `docs/M300-NATIVE.md`, the library resolver, the reviewed `bindgen` declaration
+snapshot at `crates/quickvib-m300/src/ffi_generated.rs`, and the application-side wiring the phase
+needs: the backend factory now reports whether the backend it opened owns the device port, the app
+skips its own `DeviceServer` when it does, and the resolved listen address travels in
+`DeviceOpenOptions` so it can be passed to `m300_server_create_ex`. There is still no `unsafe`
+block, no SDK call and no fake DLL (D21), so selecting `--backend m300` remains a startup error
+rather than a silent fallback to the mock.
 
-The next step is therefore either **Phase 6**, once those questions are answered, or **Phase 7**
-(docs and release polish), which does not depend on them.
+What remains in the phase is `M300Backend` itself — the `libloading` symbol table, the callback
+shim, and the bounded queue that turns the SDK's push into `DeviceBackend::stream`'s pull — and the
+manual bench run in `docs/M300-NATIVE.md` §9. **Phase 7** (docs and release polish) does not depend
+on any of it.
