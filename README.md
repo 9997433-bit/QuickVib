@@ -9,6 +9,9 @@ text commands (`*IDN?`, `INIT`, `FETC?`, …) exactly as it would to a bench ins
 records a fixed-duration vibration capture, returns the samples and the derived scalars
 (peak, RMS, peak-to-peak), and exports CSV or TXT.
 
+> **Start here to operate or integrate QuickVib:** [`docs/USAGE.md`](docs/USAGE.md) is the
+> bilingual, task-oriented software usage manual for operators and UTS integrators.
+
 The same executable also has a **desktop window** for setting a project up by hand — sample rate,
 filters, ranges, ports, export — with a Start/Stop button and live peak/RMS/p-p. It is an
 **operator panel in Simplified Chinese** on a dark console, with English and light-theme switches in
@@ -37,6 +40,8 @@ rehearse `--backend m300` — see [§9.2](#92-m300-device-sim--simulating-the-sc
 ---
 
 ## Table of contents
+
+* [Software usage manual — operators and UTS integrators](docs/USAGE.md)
 
 1. [Requirements](#1-requirements)
 2. [Quick start](#2-quick-start) · [2.1 Desktop window vs `--headless`](#21-desktop-window-vs---headless)
@@ -905,6 +910,9 @@ UTS（单元测试系统）调用。它是一个自包含的 Windows 可执行�
 连接，然后像对台式仪器那样发送标准 SCPI 文本命令（`*IDN?`、`INIT`、`FETC?` 等）。QuickVib 完成一次
 定长振动采集，返回采样数据与导出的标量结果（峰值、有效值 RMS、峰峰值），并可导出 CSV 或 TXT。
 
+> **操作或集成 QuickVib 请从这里开始：**[`docs/USAGE.md`](docs/USAGE.md) 是面向操作员与 UTS 集成人员的
+> 双语、任务导向软件使用手册。
+
 同一个可执行文件还带有一个**桌面窗口**，用于手工配置工程——采样率、滤波器、量程、端口、导出——并提供
 开始/停止按钮以及实时的峰值 / RMS / 峰峰值。窗口是深色控制台风格的**简体中文操作面板**，标题栏提供
 切换到英文与浅色主题的开关。`--headless` 是 UTS 使用的模式，永远不会打开窗口，参见
@@ -927,6 +935,8 @@ SDK 自己的监听器讲厂商的分帧协议 **SCZN**，这是演练 `--backen
 > 之前，请把 `--backend m300` 当作未经验证的路径看待。
 
 ## 目录
+
+* [软件使用手册——面向操作员与 UTS 集成人员](docs/USAGE.md)
 
 1. [运行环境](#1-运行环境)
 2. [快速开始](#2-快速开始) · [2.1 桌面窗口与 `--headless`](#21-桌面窗口与---headless)
