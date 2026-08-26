@@ -212,15 +212,25 @@ impl AppBuilder {
 
         let project = resolve_project(&self.options, &last_project, &logger)?;
         let device_port = resolve_device_port(&self.options, project.as_ref());
+        // Resolved before the backend rather than after it: with `--backend m300` the listen
+        // address is an argument to `m300_server_create_ex`, so the backend cannot be opened
+        // until it is known (`docs/M300-NATIVE.md` §6).
+        let bind_host = match self.bind_host {
+            Some(host) => host,
+            None => resolve_bind_host(&self.options, project.as_ref()),
+        };
 
         let kind = backend_factory::select_kind(self.options.backend, project.as_ref());
-        let (backend, sink) = match self.backend {
-            Some(backend) => (backend, None),
+        let (backend, sink, sdk_owns_device_port) = match self.backend {
+            // An injected backend is already open and has no transport of its own, so the
+            // device port stays ours whatever `--backend` said.
+            Some(backend) => (backend, None, false),
             None => {
                 let opened = backend_factory::create(
                     kind,
                     project.as_ref(),
                     Arc::clone(&clock),
+                    &bind_host,
                     device_port,
                     self.pace_mock,
                 )
@@ -228,7 +238,7 @@ impl AppBuilder {
                     BackendError::Unavailable { .. } => StartupError::BadArguments(e),
                     BackendError::Open { .. } => StartupError::Backend(e),
                 })?;
-                (opened.backend, opened.sink)
+                (opened.backend, opened.sink, opened.owns_device_listener)
             }
         };
 
@@ -253,11 +263,6 @@ impl AppBuilder {
             .or(project.as_ref().map(|p| p.server.max_sessions))
             .unwrap_or(crate::scpi_server::DEFAULT_MAX_SESSIONS);
 
-        let bind_host = match self.bind_host {
-            Some(host) => host,
-            None => resolve_bind_host(&self.options, project.as_ref()),
-        };
-
         let scpi_port = resolve_scpi_port(&self.options, project.as_ref());
         let scpi_addr = join_host_port(&bind_host, scpi_port);
         let scpi = ScpiServer::bind(&scpi_addr, Arc::clone(&engine), Arc::clone(&logger))
@@ -269,27 +274,57 @@ impl AppBuilder {
             .with_max_sessions(max_sessions)
             .with_fault_injection(self.fault_injection);
 
-        let device_addr = join_host_port(&bind_host, device_port);
-        let allowed_peers = project
-            .as_ref()
-            .map(|p| p.device.allowed_peers.clone())
-            .unwrap_or_default();
-        let mut device = DeviceServer::bind(&device_addr, allowed_peers, Arc::clone(&logger))
-            .map_err(|source| StartupError::Bind {
+        // The SDK binds the device port itself, and binding it here first would make
+        // `m300_server_create_ex` fail with `-7 ERR_NETWORK` — QuickVib would have taken the
+        // port away from the backend it just opened (`docs/M300-NATIVE.md` §6). The SCPI
+        // server is unaffected: the UTS link is ours on every backend.
+        let device = if sdk_owns_device_port {
+            log(
+                &logger,
+                Level::Info,
+                "device",
+                format!(
+                    "listener not started: the M300 SDK owns {}",
+                    join_host_port(&bind_host, device_port)
+                ),
+            );
+            None
+        } else {
+            let device_addr = join_host_port(&bind_host, device_port);
+            let allowed_peers = project
+                .as_ref()
+                .map(|p| p.device.allowed_peers.clone())
+                .unwrap_or_default();
+            let mut device = DeviceServer::bind(&device_addr, allowed_peers, Arc::clone(&logger))
+                .map_err(|source| StartupError::Bind {
                 what: "device",
                 addr: device_addr,
                 source,
             })?;
-        // A socket-fed backend has no transport of its own: the listener bound just above is
-        // its transport, so the framed samples have to be handed across.
-        if let Some(sink) = sink {
-            device = device.with_sink(sink);
-        }
+            // A socket-fed backend has no transport of its own: the listener bound just
+            // above is its transport, so the framed samples have to be handed across.
+            if let Some(sink) = sink {
+                device = device.with_sink(sink);
+            }
+            Some(device)
+        };
+
+        // With no listener of ours there is nothing to count and no peer to name; the
+        // instrument's own answer to `SYST:DEV:CONN?` comes from the backend either way.
+        let link_stats = device
+            .as_ref()
+            .map_or_else(|| Arc::new(LinkStats::default()), DeviceServer::stats);
+        let link_state = device
+            .as_ref()
+            .map_or_else(|| Arc::new(ConnectionState::new()), DeviceServer::state);
 
         Ok(App {
             engine,
             scpi,
             device,
+            device_port,
+            link_stats,
+            link_state,
             logger,
             cancel: CancelToken::new(),
             backend_kind: kind,
@@ -397,11 +432,18 @@ fn log(logger: &Arc<dyn Logger>, level: Level, component: &str, message: impl As
     }
 }
 
-/// A fully wired instrument: engine, SCPI server and device server, both ports already bound.
+/// A fully wired instrument: engine, SCPI server and — on every backend but `m300` — the
+/// device server, both ports already bound.
 pub struct App {
     engine: Arc<Engine>,
     scpi: ScpiServer,
-    device: DeviceServer,
+    /// `None` with `--backend m300`, where the SDK is the listener on the device port.
+    device: Option<DeviceServer>,
+    /// The resolved device port, which is the number the SDK was told to bind when there is
+    /// no [`DeviceServer`] to read it back from.
+    device_port: u16,
+    link_stats: Arc<LinkStats>,
+    link_state: Arc<ConnectionState>,
     logger: Arc<dyn Logger>,
     cancel: CancelToken,
     backend_kind: BackendKind,
@@ -413,6 +455,7 @@ impl std::fmt::Debug for App {
         f.debug_struct("App")
             .field("scpi", &self.scpi)
             .field("device", &self.device)
+            .field("device_port", &self.device_port)
             .field("backend", &self.backend_kind)
             .field("headless", &self.headless)
             .finish()
@@ -434,12 +477,35 @@ impl App {
         self.scpi.local_addr()
     }
 
-    /// The bound device address.
+    /// The bound device address, or `None` when the backend owns the device port.
+    ///
+    /// `Ok(None)` is the `--backend m300` case: the SDK bound the port from inside
+    /// `m300_server_create_ex`, so there is no listener of ours to name
+    /// (`docs/M300-NATIVE.md` §6). Use [`App::device_port`] for the number it was given.
     ///
     /// # Errors
     /// Any failure reading the socket name.
-    pub fn device_addr(&self) -> std::io::Result<std::net::SocketAddr> {
-        self.device.local_addr()
+    pub fn device_addr(&self) -> std::io::Result<Option<std::net::SocketAddr>> {
+        self.device
+            .as_ref()
+            .map(DeviceServer::local_addr)
+            .transpose()
+    }
+
+    /// The device port this process resolved, whoever ended up binding it.
+    ///
+    /// This is the configured number, so it is `0` — meaning "let the OS choose" — when the
+    /// caller asked for an ephemeral port and QuickVib is the listener. [`App::device_addr`]
+    /// is the one that reports what the OS actually assigned.
+    #[must_use]
+    pub const fn device_port(&self) -> u16 {
+        self.device_port
+    }
+
+    /// Whether QuickVib, rather than the backend, is listening on the device port.
+    #[must_use]
+    pub const fn owns_device_listener(&self) -> bool {
+        self.device.is_some()
     }
 
     /// The token that stops both accept loops.
@@ -449,15 +515,18 @@ impl App {
     }
 
     /// Counters for the device link: connections, refusals and framed samples.
+    ///
+    /// All zero with `--backend m300`, where the traffic never passes through a listener of
+    /// ours to be counted.
     #[must_use]
     pub fn link_stats(&self) -> Arc<LinkStats> {
-        self.device.stats()
+        Arc::clone(&self.link_stats)
     }
 
     /// The observable state of the device link.
     #[must_use]
     pub fn link_state(&self) -> Arc<ConnectionState> {
-        self.device.state()
+        Arc::clone(&self.link_state)
     }
 
     /// The one-line startup banner, printed on the console unless `--headless`.
@@ -465,12 +534,11 @@ impl App {
     /// # Errors
     /// Any failure reading either socket name.
     pub fn banner(&self) -> std::io::Result<String> {
-        Ok(format!(
-            "QuickVib {} ready: SCPI on port {}, device on port {}, backend {}",
-            env!("CARGO_PKG_VERSION"),
+        Ok(banner_line(
             self.scpi_addr()?.port(),
-            self.device_addr()?.port(),
-            self.backend_kind
+            self.device_addr()?.map(|addr| addr.port()),
+            self.device_port,
+            self.backend_kind,
         ))
     }
 
@@ -492,11 +560,15 @@ impl App {
     /// `main` blocks here for the life of the process.
     pub fn run(&self) {
         let cancel = self.cancel.clone();
-        let device = &self.device;
+        let device = self.device.as_ref();
         let scpi = &self.scpi;
 
         std::thread::scope(|scope| {
-            scope.spawn(|| device.run(&cancel));
+            // Nothing to accept when the SDK owns the device port; the SCPI loop is the whole
+            // job then, and it still runs on this thread so `main` blocks here either way.
+            if let Some(device) = device {
+                scope.spawn(|| device.run(&cancel));
+            }
             scpi.run(&cancel);
         });
 
@@ -519,7 +591,7 @@ impl App {
         let link_stats = self.link_stats();
         let link_state = self.link_state();
         let scpi_addr = self.scpi_addr().ok();
-        let device_addr = self.device_addr().ok();
+        let device_addr = self.device_addr().ok().flatten();
         let join = std::thread::Builder::new()
             .name("quickvib-app".to_owned())
             .spawn(move || self.run())
@@ -611,6 +683,27 @@ impl Drop for AppHandle {
     }
 }
 
+/// The startup banner, as a pure function of the four numbers it reports.
+///
+/// `bound_device_port` is `None` when the backend owns the device port, in which case the
+/// banner falls back to the configured `device_port`: it is the number the SDK was handed,
+/// and there is no listener of ours to ask what the OS assigned.
+fn banner_line(
+    scpi_port: u16,
+    bound_device_port: Option<u16>,
+    device_port: u16,
+    backend: BackendKind,
+) -> String {
+    let device = match bound_device_port {
+        Some(port) => format!("device on port {port}"),
+        None => format!("device on port {device_port} (bound by the SDK)"),
+    };
+    format!(
+        "QuickVib {} ready: SCPI on port {scpi_port}, {device}, backend {backend}",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 fn unspecified() -> std::net::SocketAddr {
     std::net::SocketAddr::from(([0, 0, 0, 0], 0))
 }
@@ -659,7 +752,7 @@ mod tests {
         let app = builder(options()).build().unwrap();
         assert!(app.engine().project().is_none());
         assert!(app.scpi_addr().unwrap().port() > 0);
-        assert!(app.device_addr().unwrap().port() > 0);
+        assert!(app.device_addr().unwrap().unwrap().port() > 0);
         assert!(app.banner().unwrap().contains("QuickVib"));
     }
 
@@ -701,6 +794,70 @@ mod tests {
         .build()
         .unwrap_err();
         assert_eq!(error.exit_code(), EXIT_BAD_ARGUMENTS);
+    }
+
+    #[test]
+    fn every_backend_that_opens_here_leaves_the_device_port_to_quickvib() {
+        // The inverse of the `m300` rule, stated where it can actually be run: `mock` and
+        // `tcp` both get a `DeviceServer`, so nothing about the socket-fed path changed when
+        // the listener became optional.
+        for kind in [BackendKind::Mock, BackendKind::Tcp] {
+            let app = builder(Options {
+                backend: Some(kind),
+                ..options()
+            })
+            .build()
+            .unwrap();
+            assert!(app.owns_device_listener(), "for {kind}");
+            assert!(app.device_addr().unwrap().is_some(), "for {kind}");
+            assert!(
+                !backend_factory::owns_device_listener(kind),
+                "the factory and the app must agree for {kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_injected_backend_keeps_the_device_listener_whatever_backend_was_named() {
+        // The integration suite injects an already-open backend and still dials the device
+        // port; `--backend m300` must not take that listener away, because no SDK was opened
+        // to replace it.
+        let mut backend = quickvib_device::MockBackend::new(Arc::new(TestClock::at_epoch()));
+        backend
+            .open(&quickvib_device::DeviceOpenOptions::new(
+                1000.0,
+                quickvib_core::SampleUnit::VelocityUmPerSec,
+            ))
+            .unwrap();
+
+        let app = builder(Options {
+            backend: Some(BackendKind::M300),
+            ..options()
+        })
+        .backend(Box::new(backend))
+        .build()
+        .unwrap();
+
+        assert!(app.owns_device_listener());
+        assert!(app.device_addr().unwrap().unwrap().port() > 0);
+    }
+
+    #[test]
+    fn the_banner_names_the_sdk_when_it_owns_the_device_port() {
+        // The `m300` half of the banner, which cannot be produced on a host without the SDK.
+        let sdk = banner_line(5025, None, 9123, BackendKind::M300);
+        assert!(sdk.contains("SCPI on port 5025"), "{sdk}");
+        assert!(
+            sdk.contains("device on port 9123 (bound by the SDK)"),
+            "{sdk}"
+        );
+        assert!(sdk.ends_with("backend m300"), "{sdk}");
+
+        // The socket-fed half reports what the OS assigned, not what was configured, so a
+        // `--device-port 0` run still names a usable number.
+        let ours = banner_line(5025, Some(41_234), 0, BackendKind::Tcp);
+        assert!(ours.contains("device on port 41234"), "{ours}");
+        assert!(!ours.contains("SDK"), "{ours}");
     }
 
     #[test]
@@ -788,7 +945,7 @@ mod tests {
         match built {
             Ok(app) => {
                 assert!(app.scpi_addr().unwrap().is_ipv6());
-                assert!(app.device_addr().unwrap().is_ipv6());
+                assert!(app.device_addr().unwrap().unwrap().is_ipv6());
             }
             Err(StartupError::Bind { addr, .. }) => {
                 assert!(addr.starts_with("[::1]:"), "{addr}");
