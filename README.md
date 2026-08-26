@@ -10,7 +10,10 @@ records a fixed-duration vibration capture, returns the samples and the derived 
 (peak, RMS, peak-to-peak), and exports CSV or TXT.
 
 > **Start here to operate or integrate QuickVib:** [`docs/USAGE.md`](docs/USAGE.md) is the
-> bilingual, task-oriented software usage manual for operators and UTS integrators.
+> bilingual, task-oriented software usage manual for operators and UTS integrators. It covers
+> building and installing, choosing between the three operation modes, the operator's guide to the
+> window, the UTS SCPI workflow command by command, running the two simulators, and a
+> symptom-indexed troubleshooting section. This README remains the reference.
 
 The same executable also has a **desktop window** for setting a project up by hand — sample rate,
 filters, ranges, ports, export — with a Start/Stop button and live peak/RMS/p-p. It is an
@@ -911,7 +914,8 @@ UTS（单元测试系统）调用。它是一个自包含的 Windows 可执行�
 定长振动采集，返回采样数据与导出的标量结果（峰值、有效值 RMS、峰峰值），并可导出 CSV 或 TXT。
 
 > **操作或集成 QuickVib 请从这里开始：**[`docs/USAGE.md`](docs/USAGE.md) 是面向操作员与 UTS 集成人员的
-> 双语、任务导向软件使用手册。
+> 双语、任务导向**软件使用说明**：编译与安装、三种运行模式如何选、操作员的窗口使用指南、UTS 的 SCPI
+> 作业流程逐条讲解、两个模拟器怎么跑，以及按现象索引的故障排查表。本 README 仍然是参考手册。
 
 同一个可执行文件还带有一个**桌面窗口**，用于手工配置工程——采样率、滤波器、量程、端口、导出——并提供
 开始/停止按钮以及实时的峰值 / RMS / 峰峰值。窗口是深色控制台风格的**简体中文操作面板**，标题栏提供
