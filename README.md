@@ -11,8 +11,9 @@ records a fixed-duration vibration capture, returns the samples and the derived 
 
 The same executable also has a **desktop window** for setting a project up by hand — sample rate,
 filters, ranges, ports, export — with a Start/Stop button and live peak/RMS/p-p. It is an
-**operator panel in Simplified Chinese**, with an English switch in the title bar. `--headless` is
-the UTS mode and never opens one; see [§2.1](#21-desktop-window-vs---headless).
+**operator panel in Simplified Chinese** on a dark console, with English and light-theme switches in
+the title bar. `--headless` is the UTS mode and never opens one; see
+[§2.1](#21-desktop-window-vs---headless).
 
 Scope is deliberately narrow: QuickVib **records, measures, and exports**. It does not decide
 pass/fail, does not drive DUT vibration, and does not own retry policy — those stay in the UTS.
@@ -127,11 +128,25 @@ Nothing raw from the schema reaches the screen. `velocity_um_s` is shown as **�
 machine reads **空闲 / 武装 / 录制中 / 完成 / 已中止** rather than `IDLE`/`ARMED`/… The English
 side of the switch is a real translation, not the enum spellings.
 
+#### Theme
+
+The window opens on the **dark console** — the shipped look, and the right one for a test cell with
+the lights down and the laser running. The **浅色 / 深色 · Light / Dark** switch sits immediately
+left of the language switch in the title bar and repaints everything on the next frame, with no
+restart and nothing to reload; the choice is remembered in `ui-theme.txt` beside `ui-language.txt`
+in the same state directory. Deleting that file gives the dark console again.
+
+The light palette is not the dark one inverted. Every accent is darkened until it clears a 4.5:1
+contrast ratio against the card it is drawn on, so the status chips, the big 录制中 state block, the
+运行中 recording banner and the rejected-field list stay as readable on a white bench panel as they
+are on the black one. Only colours change: the same layout, the same spacing, the same embedded
+Chinese font, in both themes and both languages.
+
 #### Layout
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ QuickVib   Test               [已连接] [录制状态 完成] [SCPI 15025 · 设备 19123] [中文|EN] │
+│ QuickVib  Test  [已连接] [录制状态 完成] [SCPI 15025 · 设备 19123] [浅色|深色] [中文|EN] │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 文件▼ 打开 保存 另存为 应用 还原                                    [配置|高级] │
 ├────────────────────────────────────────────┬─────────────────────────────────┤
@@ -147,7 +162,8 @@ side of the switch is a real translation, not the enum spellings.
 ```
 
 The **title bar** carries the product name, the open project and whether it has unsaved edits, then
-three status chips — device link, record state, live ports — and the language switch. The **left
+three status chips — device link, record state, live ports — and the theme and language switches.
+The **left
 column** scrolls and holds the configuration, grouped into cards; the **right column** is fixed
 width and is the instrument. The **status bar** repeats the state, shows the outcome of the last
 action, and always names the ports this process is actually listening on.
@@ -673,7 +689,7 @@ is what ships.
 | `quickvib-device` | `DeviceBackend` trait, mock and socket-fed backends, LE `f32` framer, inbound listener |
 | `quickvib-scpi` | Lexer, command tree, parsed commands, response formatting |
 | `quickvib-engine` | State machine, error queue, OPC, recording pipeline, dispatch |
-| `quickvib-ui` | Desktop front end: the display-free view model and the Chinese/English label table always, the egui window and the embedded CJK font behind `--features gui` |
+| `quickvib-ui` | Desktop front end: the display-free view model, the Chinese/English label table and the language and theme preferences always, the egui window, its two palettes and the embedded CJK font behind `--features gui` |
 | `quickvib-sim` | The `m300-sim` executable: an inbound M300 stand-in (§9.1) |
 | `quickvib-testkit` | Dev-only shared test fixtures; ships nothing |
 | `quickvib-m300` | **Windows-only**, out of `default-members`, the only crate containing `unsafe` |
@@ -687,6 +703,7 @@ is what ships.
 | A GUI edit did not reach the instrument | Only **应用 / Apply** pushes the form into the running engine. Ports, backend, sample rate and data type are saved but need a restart, which Apply says explicitly |
 | The window shows a port the UTS cannot connect to | Read **实际监听端口 / Live listening ports** in the status bar, not the editable 项目端口 fields: `--scpi-port` / `--device-port` override the project file, and the window labels the two separately for exactly this reason ([§2.1](#live-ports-vs-project-ports)) |
 | The window is in Chinese and you want English | The **中文 / EN** switch is in the top-right of the title bar; the choice is remembered in `ui-language.txt` under the state directory. Chinese is the default on first launch and after that file is deleted |
+| The dark window is unreadable on a bright bench | The **浅色 / 深色 · Light / Dark** switch is immediately left of the language switch; the choice is remembered in `ui-theme.txt` under the same state directory. Dark is the default on first launch and after that file is deleted ([§2.1](#theme)) |
 | Exit code `2` | Bad arguments — unknown flag, missing value, or a port outside 1–65535. Usage is on stderr |
 | Exit code `4` | `--project` was given but the file is missing or fails schema validation. The log line carries the JSON line and column |
 | `SYST:DEV:CONN?` returns `0` | The M300 has not dialed in. Check that it is powered, on the same network, configured to connect to this host on `9123`, that no firewall blocks the inbound connection, and that `device.allowedPeers` (if set) includes its address. With `--backend mock` this is always `1`, because the mock needs no link |
@@ -747,8 +764,9 @@ UTS（单元测试系统）调用。它是一个自包含的 Windows 可执行�
 定长振动采集，返回采样数据与导出的标量结果（峰值、有效值 RMS、峰峰值），并可导出 CSV 或 TXT。
 
 同一个可执行文件还带有一个**桌面窗口**，用于手工配置工程——采样率、滤波器、量程、端口、导出——并提供
-开始/停止按钮以及实时的峰值 / RMS / 峰峰值。窗口是**简体中文的操作面板**，标题栏提供切换到英文的开
-关。`--headless` 是 UTS 使用的模式，永远不会打开窗口，参见 [§2.1](#21-桌面窗口与---headless)。
+开始/停止按钮以及实时的峰值 / RMS / 峰峰值。窗口是深色控制台风格的**简体中文操作面板**，标题栏提供
+切换到英文与浅色主题的开关。`--headless` 是 UTS 使用的模式，永远不会打开窗口，参见
+[§2.1](#21-桌面窗口与---headless)。
 
 功能边界是刻意收窄的：QuickVib 只负责**采集、测量、导出**。它不做合格判定，不驱动 DUT 振动，也不负责
 重试策略——这些仍由 UTS 负责。
@@ -853,11 +871,21 @@ schema 中的原始枚举值不会出现在界面上：`velocity_um_s` 显示为
 **= 100 kHz**，后端显示为**模拟 / TCP设备 / M300**，状态机显示为**空闲 / 武装 / 录制中 / 完成 /
 已中止**，而不是 `IDLE`/`ARMED`/…。切换到英文时同样是完整的英文译文，而不是枚举拼写。
 
+#### 主题切换
+
+窗口默认使用**深色**控制台配色——这是一贯交付的外观，也适合关灯开激光的试验间。标题栏中语言开关左
+侧就是 **浅色 / 深色** 开关，点击后下一帧即完成整窗重绘，无需重启、也不重新加载任何东西；所选主题记
+录在状态目录下的 `ui-theme.txt`，与 `ui-language.txt` 并列。删除该文件后重新启动，又会回到深色。
+
+浅色配色不是把深色配色简单反相：每一种强调色都经过加深，与其所在卡片的对比度不低于 4.5:1，因此状态
+标签、大号的**录制中**状态块、录制中的锁定横幅以及被拒绝字段列表，在白色台面上与在黑色面板上同样清
+晰。两种主题之间只有颜色不同：布局、间距与内嵌中文字体完全一致，中英文界面亦然。
+
 #### 布局
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ QuickVib   Test               [已连接] [录制状态 完成] [SCPI 15025 · 设备 19123] [中文|EN] │
+│ QuickVib  Test  [已连接] [录制状态 完成] [SCPI 15025 · 设备 19123] [浅色|深色] [中文|EN] │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 文件▼ 打开 保存 另存为 应用 还原                                    [配置|高级] │
 ├────────────────────────────────────────────┬─────────────────────────────────┤
@@ -873,8 +901,8 @@ schema 中的原始枚举值不会出现在界面上：`velocity_um_s` 显示为
 ```
 
 **标题栏**显示产品名、当前工程及是否有未保存的修改，随后是三个状态标签——设备链路、录制状态、实际监
-听端口——以及语言开关。**左栏**可滚动，按卡片分组放置全部配置；**右栏**宽度固定，就是仪表面板。**状
-态栏**重复显示当前状态、最近一次操作的结果，并始终标出本进程实际监听的端口。
+听端口——以及主题与语言开关。**左栏**可滚动，按卡片分组放置全部配置；**右栏**宽度固定，就是仪表面
+板。**状态栏**重复显示当前状态、最近一次操作的结果，并始终标出本进程实际监听的端口。
 
 左栏编辑的就是工程文件——与 `samples/Test.proj` 相同的 JSON，并使用与 `MMEM:LOAD:STAT` 完全相同的校验
 规则：
@@ -1356,7 +1384,7 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 | `quickvib-device` | `DeviceBackend` trait、模拟后端与套接字驱动后端、小端 `f32` framer、入站监听 |
 | `quickvib-scpi` | 词法分析、命令树、命令解析结果、响应格式化 |
 | `quickvib-engine` | 状态机、错误队列、OPC、录制流水线、命令分发 |
-| `quickvib-ui` | 桌面前端：不依赖窗口库的视图模型与中英文文案表始终编译，egui 窗口与内嵌 CJK 字体位于 `--features gui` 之后 |
+| `quickvib-ui` | 桌面前端：不依赖窗口库的视图模型、中英文文案表与语言/主题偏好始终编译，egui 窗口、两套配色与内嵌 CJK 字体位于 `--features gui` 之后 |
 | `quickvib-sim` | `m300-sim` 可执行程序：模拟 M300 主动连入的替身（§9.1） |
 | `quickvib-testkit` | 仅供测试使用的共享夹具，不参与发布 |
 | `quickvib-m300` | **仅 Windows**，不在 `default-members` 中，是唯一包含 `unsafe` 的 crate |
@@ -1370,6 +1398,7 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 | GUI 中的修改没有生效 | 只有**应用**会把表单推入运行中的引擎。端口、数据来源、采样率与数据类型会被保存，但需要重启，应用会明确提示 |
 | 窗口上显示的端口连不上 | 请看状态栏里的**实际监听端口**，而不是可编辑的**项目端口**字段：`--scpi-port` / `--device-port` 会覆盖工程文件，窗口正是为此把两者分开标注（[§2.1](#实际监听端口与项目端口)） |
 | 想把界面切换成英文 | 标题栏右上角有 **中文 / EN** 开关；所选语言记录在状态目录下的 `ui-language.txt`。首次启动、以及删除该文件之后，默认都是中文 |
+| 明亮环境下深色界面看不清 | 语言开关左侧就是 **浅色 / 深色** 开关；所选主题记录在同一状态目录下的 `ui-theme.txt`。首次启动、以及删除该文件之后，默认都是深色（[§2.1](#主题切换)） |
 | 退出码 `2` | 参数错误——未知参数、缺少取值，或端口不在 1–65535。用法信息输出在 stderr |
 | 退出码 `4` | 指定了 `--project` 但文件不存在或 schema 校验失败。日志中包含出错的 JSON 行号与列号 |
 | `SYST:DEV:CONN?` 返回 `0` | M300 尚未连入。检查设备是否上电、是否与主机同网段、是否配置为连接本机 `9123`、防火墙是否拦截入站连接，以及 `device.allowedPeers`（若配置）是否包含其地址。`--backend mock` 下该查询恒为 `1`，因为模拟后端不需要链路 |
