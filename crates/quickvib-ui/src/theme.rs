@@ -38,6 +38,9 @@ pub struct Palette {
     pub edge: Color32,
     /// Body text.
     pub text: Color32,
+    /// Emphasised text: card titles, the project name, a bold reading. What egui calls the
+    /// strong text colour, and the one colour that must out-contrast [`Palette::text`].
+    pub strong: Color32,
     /// Secondary text: hints, units, help lines.
     pub muted: Color32,
     /// The product accent, used for headings and the active tab.
@@ -60,6 +63,9 @@ pub struct Palette {
     pub control_hover: Color32,
     /// The same, held down.
     pub pressed: Color32,
+    /// The outline around a control. A light panel needs one to tell a white field from the
+    /// white card under it; the dark console never had one and does not get one now.
+    pub control_stroke: Stroke,
     /// The fill behind a selected item and behind selected text.
     pub selection: Color32,
     /// A control that cannot be used right now.
@@ -74,6 +80,7 @@ pub const DARK: Palette = Palette {
     instrument: Color32::from_rgb(0x16, 0x1C, 0x24),
     edge: Color32::from_rgb(0x2B, 0x35, 0x43),
     text: Color32::from_rgb(0xE3, 0xE9, 0xF2),
+    strong: Color32::WHITE,
     muted: Color32::from_rgb(0x93, 0xA1, 0xB4),
     accent: Color32::from_rgb(0x39, 0xA8, 0xE0),
     ok: Color32::from_rgb(0x35, 0xB0, 0x6B),
@@ -85,6 +92,7 @@ pub const DARK: Palette = Palette {
     control: Color32::from_rgb(0x25, 0x2E, 0x3A),
     control_hover: Color32::from_rgb(0x2F, 0x3A, 0x49),
     pressed: Color32::from_rgb(0x2A, 0x63, 0x86),
+    control_stroke: Stroke::NONE,
     selection: Color32::from_rgb(0x1E, 0x54, 0x74),
     disabled: Color32::from_rgb(0x23, 0x2B, 0x36),
 };
@@ -102,6 +110,7 @@ pub const LIGHT: Palette = Palette {
     instrument: Color32::from_rgb(0xE5, 0xEA, 0xF0),
     edge: Color32::from_rgb(0xBC, 0xC5, 0xD2),
     text: Color32::from_rgb(0x16, 0x1E, 0x29),
+    strong: Color32::from_rgb(0x08, 0x0D, 0x14),
     muted: Color32::from_rgb(0x4D, 0x5A, 0x6D),
     accent: Color32::from_rgb(0x0A, 0x63, 0x99),
     ok: Color32::from_rgb(0x18, 0x6E, 0x3F),
@@ -110,11 +119,15 @@ pub const LIGHT: Palette = Palette {
     bad: Color32::from_rgb(0xA8, 0x22, 0x22),
     sunken: Color32::from_rgb(0xFF, 0xFF, 0xFF),
     faint: Color32::from_rgb(0xE7, 0xEC, 0xF2),
-    control: Color32::from_rgb(0xE1, 0xE6, 0xEE),
-    control_hover: Color32::from_rgb(0xD1, 0xD9, 0xE4),
-    pressed: Color32::from_rgb(0xB2, 0xD3, 0xEB),
+    control: Color32::from_rgb(0xF4, 0xF7, 0xFB),
+    control_hover: Color32::from_rgb(0xE6, 0xEC, 0xF4),
+    pressed: Color32::from_rgb(0xC6, 0xDF, 0xF2),
+    control_stroke: Stroke {
+        width: 1.0,
+        color: Color32::from_rgb(0xB5, 0xC0, 0xCF),
+    },
     selection: Color32::from_rgb(0xC2, 0xDE, 0xF3),
-    disabled: Color32::from_rgb(0xDD, 0xE2, 0xE9),
+    disabled: Color32::from_rgb(0xDA, 0xDF, 0xE7),
 };
 
 impl Palette {
@@ -185,8 +198,12 @@ pub fn apply(ctx: &egui::Context, theme: Theme) {
     visuals.selection.bg_fill = palette.selection;
     visuals.selection.stroke = Stroke::new(1.0, palette.text);
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, palette.edge);
+    // egui fades a disabled widget towards this one colour, so a light panel that leaves it
+    // at the dark-mode default grows black buttons wherever a control is out of reach.
+    visuals.widgets.noninteractive.weak_bg_fill = palette.backdrop;
     visuals.widgets.inactive.bg_fill = palette.control;
     visuals.widgets.inactive.weak_bg_fill = palette.control;
+    visuals.widgets.inactive.bg_stroke = palette.control_stroke;
     visuals.widgets.inactive.rounding = Rounding::same(5.0);
     visuals.widgets.hovered.bg_fill = palette.control_hover;
     visuals.widgets.hovered.weak_bg_fill = palette.control_hover;
@@ -195,6 +212,22 @@ pub fn apply(ctx: &egui::Context, theme: Theme) {
     visuals.widgets.active.weak_bg_fill = palette.pressed;
     visuals.widgets.active.rounding = Rounding::same(5.0);
     visuals.widgets.open.rounding = Rounding::same(5.0);
+
+    // Text that names its own colour is unaffected, but the strings that do not — a card
+    // title, a checkbox tick, a combo box arrow — read their colour off the widget state
+    // egui is drawing. Left at the dark-mode defaults, every one of them is white, which on
+    // the light panel is a heading nobody can see.
+    for (state, width) in [
+        (&mut visuals.widgets.noninteractive, 1.0),
+        (&mut visuals.widgets.inactive, 1.0),
+        (&mut visuals.widgets.open, 1.0),
+    ] {
+        state.fg_stroke = Stroke::new(width, palette.text);
+    }
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, palette.strong);
+    // `Visuals::strong_text_color` is this one, and it is what every `RichText::strong` in
+    // the window resolves to.
+    visuals.widgets.active.fg_stroke = Stroke::new(2.0, palette.strong);
 
     ctx.set_style(style);
 }
