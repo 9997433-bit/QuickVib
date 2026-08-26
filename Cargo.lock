@@ -1949,6 +1949,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "quickvib-sczn"
+version = "1.0.0"
+dependencies = [
+ "quickvib-core",
+ "quickvib-sim",
+]
+
+[[package]]
 name = "quickvib-sim"
 version = "1.0.0"
 dependencies = [

@@ -1,0 +1,29 @@
+[package]
+name = "quickvib-sczn"
+description = "The SCZN device-side protocol and m300-device-sim: an M300 stand-in that speaks SCZN to the vendor SDK's listener."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "m300-device-sim"
+path = "src/main.rs"
+
+[lib]
+name = "quickvib_sczn"
+path = "src/lib.rs"
+
+[dependencies]
+quickvib-core.workspace = true
+
+# Test-only, and only so one test can assert that this crate's tone is bit-identical to the one
+# `m300-sim` transmits. The two simulators are independent at run time on purpose.
+[dev-dependencies]
+quickvib-sim.workspace = true

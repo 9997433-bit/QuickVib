@@ -11,6 +11,7 @@ members = [
     "crates/quickvib-ui",
     "crates/quickvib-testkit",
     "crates/quickvib-sim",
+    "crates/quickvib-sczn",
     "crates/quickvib-m300",
 ]
 
@@ -28,6 +29,7 @@ default-members = [
     "crates/quickvib-ui",
     "crates/quickvib-testkit",
     "crates/quickvib-sim",
+    "crates/quickvib-sczn",
 ]
 
 [workspace.package]
@@ -49,6 +51,7 @@ quickvib-engine = { path = "crates/quickvib-engine", version = "1.0.0" }
 quickvib-ui = { path = "crates/quickvib-ui", version = "1.0.0" }
 quickvib-testkit = { path = "crates/quickvib-testkit", version = "1.0.0" }
 quickvib-sim = { path = "crates/quickvib-sim", version = "1.0.0" }
+quickvib-sczn = { path = "crates/quickvib-sczn", version = "1.0.0" }
 
 # Upper bounds keep the graph inside the pinned MSRV (rust-toolchain.toml). Cargo.lock is
 # committed (D26) so the exact versions are reproducible; these ceilings stop a fresh
