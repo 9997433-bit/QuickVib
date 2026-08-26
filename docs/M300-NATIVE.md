@@ -1,9 +1,10 @@
 # M300 SDK v1.2.0 — native ABI contract
 
-> **Status: filled in from the real SDK v1.2.0 distribution.** Q-A (ABI), Q-B (socket ownership)
-> and Q-C (bitness and toolchain) from `docs/PLAN.md` §21.1 are answered below, from the vendor's
-> own headers, PDFs and sample code — not from guesswork. What is left for Phase 6 is writing
-> `M300Backend`, plus the handful of rows marked **bench** that only real hardware can settle.
+> **Status: filled in from the real SDK v1.2.0 distribution, and now implemented against.** Q-A
+> (ABI), Q-B (socket ownership) and Q-C (bitness and toolchain) from `docs/PLAN.md` §21.1 are
+> answered below, from the vendor's own headers, PDFs and sample code — not from guesswork. What is
+> left for Phase 6 is the bench run of §9: the rows marked **bench** are the ones only real hardware
+> can settle.
 >
 > Everything here was read out of the vendor archive `M300SDK_v1.2.0.zip` (27 MB), which was
 > unpacked **outside** the repository and is not committed, in keeping with D21/§22. Sources:
@@ -12,9 +13,10 @@
 > `doc/网络配置协议.pdf` (UDP configuration protocol), the C / C++ / C# / Python / LabVIEW samples,
 > and the PE export tables of both shipped DLLs.
 >
-> `crates/quickvib-m300` now contains the reviewed `bindgen` snapshot (`src/ffi_generated.rs`,
-> declarations only) alongside the resolver. There is still no `unsafe` block, no SDK call and no
-> binary. See "Current implementation status" at the end.
+> `crates/quickvib-m300` now holds the whole backend: the reviewed `bindgen` snapshot
+> (`src/ffi_generated.rs`), the resolver, the platform-neutral maps/errors/queue, the `libloading`
+> symbol table and `M300Backend` itself. There is still no binary and no fake DLL. See "Current
+> implementation status" at the end for what that does and does not mean.
 
 ## 0. Ground rules
 
@@ -366,13 +368,17 @@ and record the date, SDK version, and QuickVib commit alongside the results.
 | `build.rs` | Written — no-op in a normal build; with `--features bindgen` it parses both vendor headers through a generated wrapper, regenerates, and fails on drift from the committed snapshot (§4) |
 | `src/resolver.rs` | Written — the probe order of §1 as pure path arithmetic, plus `ResolveError`, which names every path tried and maps to `-241`. Platform-neutral and unit-tested on Linux |
 | `src/ffi_generated.rs` | **Written** — reviewed `bindgen` snapshot of the real v1.2.0 headers: 103 prototypes, the `#[repr(C)]` structs, callback types and error enums. Declarations only; nothing calls them, nothing links them |
-| `src/ffi.rs` | **Not written.** Needs the two hand-declared prototypes of §3.1 plus the `libloading` symbol table |
-| `M300Backend` (`DeviceBackend` impl) | **Not written** — but no longer blocked: Q-A, Q-B and Q-C are answered. Phase 6 can start |
-| Real SDK calls | **None.** No `unsafe` block exists yet; nothing calls `libloading` |
+| `src/maps.rs`, `src/error.rs`, `src/batch.rs`, `src/shim.rs` | **Written** — the platform-neutral half: the enum ladders of §6.1, the two-level result mapping of §5, what a data callback may believe about its buffer (§7), and the `extern "C"` shims plus the bounded queue that turns the SDK's push into `DeviceBackend::stream`'s pull. All compiled and unit-tested on Linux |
+| `src/ffi.rs` | **Written** — the `libloading` symbol table: the probe order of §1, every entry point of §3 including the two §3.1 exports no header declares, and the version read-back. Windows only |
+| `M300Backend` (`DeviceBackend` impl) | **Written** — loads the DLL, brings the SDK's server up on `bind_host:device_port`, registers the link and data callbacks, applies the project's rate/filter/range, and drains the queue. Windows only |
+| Real SDK calls | **Yes**, all of them through `src/ffi.rs`, each `unsafe` block carrying a `SAFETY:` comment naming the row of §2 it depends on |
+| Application wiring | **Written** — `backend_factory` constructs the backend and reports that it owns the device port; the app skips its own `DeviceServer` so the two do not fight over the port (§6) |
 | Fake DLL | **None, and none will be added** (D21). The vendor's real DLL is not committed either |
-| Linux impact | None. The crate is outside `default-members`, so a plain `cargo build`/`test`/`clippy` never compiles it. Under `--workspace` it does compile — including the snapshot — and its tests pass on Linux, by design |
+| Linux impact | None. The crate is outside `default-members`, so a plain `cargo build`/`test`/`clippy` never compiles it. Under `--workspace` it does compile — the Windows-only modules reduce to nothing — and every platform-neutral test runs on Linux, by design |
 
-**Phase 6 is unblocked.** What still needs a Windows bench with real hardware is narrow and listed
-in §9: the two undeclared symbols resolving and round-tripping (§3.1), the snapshot regenerating
-identically on Windows (§4), the filter/rate pairing rule (§6.1), and open/close thread affinity
-(§8).
+**The code is complete; the verification is not.** Nothing above has touched real hardware, and
+without a fake DLL nothing in CI can. The bench run in §9 is the whole of what is left, and until it
+is recorded — date, SDK version, QuickVib commit — `--backend m300` should be treated as untried.
+The rows most likely to be wrong are the ones CI cannot reach at all: the two undeclared symbols
+resolving and round-tripping (§3.1), the snapshot regenerating identically on Windows (§4), the
+filter/rate pairing rule (§6.1), and open/close thread affinity (§8).

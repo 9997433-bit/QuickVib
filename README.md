@@ -24,10 +24,13 @@ inbound device link without an M300, `--backend tcp` records from whatever dials
 port, and the bundled **`m300-sim`** executable is a stand-in that dials in and streams — see
 [§9.1](#91-m300-sim--simulating-the-inbound-device-link).
 
-> **Status.** This is an in-progress build of the plan in [`docs/PLAN.md`](docs/PLAN.md). The
-> supported paths are the mock backend and the socket-fed `tcp` backend. The M300 native backend
-> (`crates/quickvib-m300`) is **scaffolding only** — no SDK calls are implemented, and by design no
-> fake DLL exists in this repository. See [`docs/M300-NATIVE.md`](docs/M300-NATIVE.md).
+> **Status.** This is an in-progress build of the plan in [`docs/PLAN.md`](docs/PLAN.md). The mock
+> backend and the socket-fed `tcp` backend are complete and exercised by CI on every commit. The
+> M300 native backend (`crates/quickvib-m300`) is **written but not yet bench-verified**: it loads
+> the vendor DLL at run time and drives real hardware, and by design no fake DLL exists in this
+> repository, so the last mile is the manual Windows checklist in
+> [`docs/M300-NATIVE.md`](docs/M300-NATIVE.md) §9 against a real instrument. Treat `--backend m300`
+> as untried until that run is recorded.
 
 ---
 
@@ -815,9 +818,11 @@ UTS（单元测试系统）调用。它是一个自包含的 Windows 可执行�
 `--backend tcp`：它会记录任何连入设备端口的数据流；仓库同时提供 **`m300-sim`** 可执行程序作为主动连入
 并推送数据的替身——参见 [§9.1](#91-m300-sim模拟设备入站链路)。
 
-> **当前状态。** 本仓库正在按 [`docs/PLAN.md`](docs/PLAN.md) 的计划实现。受支持的路径是模拟后端与
-> 套接字驱动的 `tcp` 后端。M300 原生后端（`crates/quickvib-m300`）目前**只有脚手架**——尚未实现任何
-> SDK 调用；按设计，仓库中不存在任何假的 DLL。详见 [`docs/M300-NATIVE.md`](docs/M300-NATIVE.md)。
+> **当前状态。** 本仓库正在按 [`docs/PLAN.md`](docs/PLAN.md) 的计划实现。模拟后端与套接字驱动的
+> `tcp` 后端均已完成，每次提交都由 CI 覆盖。M300 原生后端（`crates/quickvib-m300`）**代码已经写完，
+> 但尚未上机验证**：它在运行时加载厂商 DLL 并驱动真实硬件；按设计，仓库中不存在任何假的 DLL，因此最后
+> 一公里是用真机跑一遍 [`docs/M300-NATIVE.md`](docs/M300-NATIVE.md) §9 的手工检查清单。在那次记录完成
+> 之前，请把 `--backend m300` 当作未经验证的路径看待。
 
 ## 目录
 

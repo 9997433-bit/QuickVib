@@ -613,9 +613,23 @@ fn describe<T: std::fmt::Display>(value: Result<Option<T>, NativeError>) -> Stri
 
 impl DeviceBackend for M300Backend {
     fn is_connected(&self) -> bool {
-        self.live
-            .as_ref()
-            .is_some_and(|live| live.shared.is_connected())
+        let Some(live) = self.live.as_ref() else {
+            return false;
+        };
+        // The connect and disconnect callbacks are what publish the link, but they are the
+        // SDK telling us after the fact; `m300_device_is_connected` is the SDK answering now.
+        // Asking it is what §3 says this query is for, it cannot fail, and it is the
+        // difference between reporting a link that died without a disconnect callback and
+        // reporting one that is really there.
+        match live.shared.device() {
+            // SAFETY: §2 and §3 — the handle came from the connect callback and is still in
+            // `shared`, so it has not been released: `take_device` and `take_stale` remove a
+            // handle from `shared` before anything releases it, and both are reachable only
+            // through `&mut self` methods, which cannot run while this `&self` borrow is
+            // alive. The call never fails and answers `0` for a device that has gone away.
+            Some(device) => unsafe { live.sdk.device_is_connected(device.0) },
+            None => false,
+        }
     }
 
     fn open(&mut self, options: &DeviceOpenOptions) -> Result<(), DeviceError> {

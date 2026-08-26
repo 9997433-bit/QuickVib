@@ -1366,18 +1366,23 @@ Linux plus a green `cargo clippy -- -D warnings`. **None of this starts until th
    compile-checked in the cross-Windows CI job, not executed in CI. **No longer gated**: Q-A, Q-B
    and Q-C are answered in §21.1 from the vendor's own distribution.
 
-   **In progress.** The ABI contract (`docs/M300-NATIVE.md`), the resolver and the reviewed
-   `bindgen` snapshot have landed, and so has the application-side wiring this phase needs. That
-   wiring is worth stating explicitly because Q-B changed it: `m300_server_create_ex` binds and
-   listens on the device port itself, so with `--backend m300` QuickVib must not start a
+   **Code complete; bench verification outstanding.** The ABI contract
+   (`docs/M300-NATIVE.md`), the resolver, the reviewed `bindgen` snapshot, the platform-neutral
+   maps/errors/queue, the `libloading` symbol table and `M300Backend` itself have all landed, and
+   so has the application-side wiring.
+
+   That wiring is worth stating explicitly because Q-B changed it. `m300_server_create_ex` binds
+   and listens on the device port itself, so with `--backend m300` QuickVib must not start a
    `DeviceServer` — it would take the port away from the backend it just opened, and the SDK would
    report `-7 ERR_NETWORK`. `backend_factory` therefore reports whether the backend it opened owns
    the listener, `App` holds an `Option<DeviceServer>` and skips the accept loop when it does, and
    `--bind` / `--device-port` are folded into `DeviceOpenOptions` so they can be handed to
    `m300_server_create_ex` as arguments. The SCPI server is unchanged on every backend, and so is
-   the socket-fed `tcp` path. What remains is `M300Backend` itself — `ffi.rs`, the callback shim,
-   the bounded queue that turns the SDK's push into the trait's pull — and the bench run in
-   `docs/M300-NATIVE.md` §9.
+   the socket-fed `tcp` path.
+
+   What remains is the one thing CI cannot do: the manual Windows run against real hardware in
+   `docs/M300-NATIVE.md` §9. Without a fake DLL (D21) nothing on this path has met an instrument,
+   so `--backend m300` stays untried until that run is recorded.
 8. **Phase 7 — Docs and polish.** Bilingual README (§23), `docs/SCPI.md`, a copy-pasteable UTS
    example transcript, release profile tuning (`lto = "thin"`, `codegen-units = 1`, `strip = true`,
    `panic = "unwind"` kept per D27), `cargo deny` gate, tagged release producing the MSVC exe.
@@ -1650,17 +1655,17 @@ scalars, and export CSV or TXT. `cargo test --workspace` and `cargo clippy --wor
 -- -D warnings` are green on Linux, and `cargo build --release --target x86_64-pc-windows-gnu`
 produces the Windows executable.
 
-**Phase 6, the M300 native backend, is in progress and no longer gated** — Q-A, Q-B and Q-C are
-answered in §21.1 from the vendor's `M300SDK_v1.2.0` distribution. What has landed is the ABI
-contract in `docs/M300-NATIVE.md`, the library resolver, the reviewed `bindgen` declaration
-snapshot at `crates/quickvib-m300/src/ffi_generated.rs`, and the application-side wiring the phase
-needs: the backend factory now reports whether the backend it opened owns the device port, the app
-skips its own `DeviceServer` when it does, and the resolved listen address travels in
-`DeviceOpenOptions` so it can be passed to `m300_server_create_ex`. There is still no `unsafe`
-block, no SDK call and no fake DLL (D21), so selecting `--backend m300` remains a startup error
-rather than a silent fallback to the mock.
+**Phase 6, the M300 native backend, is code complete and no longer gated** — Q-A, Q-B and Q-C are
+answered in §21.1 from the vendor's `M300SDK_v1.2.0` distribution. `quickvib-m300` now holds the
+ABI contract in `docs/M300-NATIVE.md`, the library resolver, the reviewed `bindgen` snapshot, the
+platform-neutral enum ladders / error mapping / bounded queue, the `libloading` symbol table and
+`M300Backend`. The application side is wired to match: the backend factory constructs it and
+reports that it owns the device port, the app skips its own `DeviceServer` when it does, and the
+resolved listen address travels in `DeviceOpenOptions` so it reaches `m300_server_create_ex`. On a
+non-Windows host, or in a build without the `m300` feature, `--backend m300` is still a startup
+error rather than a silent fallback to the mock.
 
-What remains in the phase is `M300Backend` itself — the `libloading` symbol table, the callback
-shim, and the bounded queue that turns the SDK's push into `DeviceBackend::stream`'s pull — and the
-manual bench run in `docs/M300-NATIVE.md` §9. **Phase 7** (docs and release polish) does not depend
-on any of it.
+What remains is verification rather than code, and it is the one thing CI cannot do: the manual
+Windows run against real hardware in `docs/M300-NATIVE.md` §9. There is no fake DLL (D21), so
+nothing on this path has met an instrument; until that run is recorded — date, SDK version, commit
+— treat `--backend m300` as untried. **Phase 7** (docs and release polish) does not depend on it.
