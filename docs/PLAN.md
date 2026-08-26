@@ -377,7 +377,16 @@ quickvib/
     │   └── src/{lib.rs, main.rs}
     └── quickvib-m300/                # WINDOWS-ONLY; the ONLY crate with `unsafe`
         ├── build.rs                  # bindgen, gated behind the `bindgen` feature (§11)
-        └── src/{lib.rs, ffi.rs, resolver.rs, backend.rs}
+        └── src/
+            ├── lib.rs                # exports, the supported-target flag, the SDK version
+            ├── ffi_generated.rs      # the reviewed bindgen declaration snapshot
+            ├── resolver.rs           # where the DLL is looked for, in what order
+            ├── maps.rs               # vendor enum indices <-> hertz, units, ranges
+            ├── error.rs              # native status codes -> DeviceError / SCPI
+            ├── batch.rs              # what a data callback may believe about its buffer
+            ├── shim.rs               # the extern "C" callbacks, the queue, the drain loop
+            ├── ffi.rs                # WINDOWS: the libloading symbol table
+            └── backend.rs            # WINDOWS: M300Backend itself
 ```
 
 Integration tests live in `crates/quickvib/tests/` (they drive the real TCP server) and in
