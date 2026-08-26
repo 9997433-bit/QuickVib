@@ -1,8 +1,10 @@
 //! Windows-only interop with the M300 laser Doppler vibrometer SDK v1.2.0.
 //!
-//! The ABI this crate is written against — every signature, every ownership rule, every enum
-//! index — is documented in `docs/M300-NATIVE.md`, read out of the vendor's own headers, PDFs and
-//! sample code.
+//! [`M300Backend`] is the `DeviceBackend` that drives real hardware: it loads the vendor DLL at
+//! run time, lets the SDK own the listening socket, and turns the samples the SDK pushes at it
+//! into the batches the engine pulls. The ABI it is written against — every signature, every
+//! ownership rule, every enum index — is documented in `docs/M300-NATIVE.md`, read out of the
+//! vendor's own headers, PDFs and sample code.
 //!
 //! Per D21 there is **no fake or stub `m300_sdk.dll` in this repository**, and none will be
 //! added; the vendor's real DLL is not committed either. That means the last mile is verified by
@@ -25,10 +27,11 @@
 //! | [`batch`] | any | What the data callback may believe about the buffer it was handed |
 //! | [`shim`] | any | The `extern "C"` callbacks, the queue they fill and the drain loop |
 //! | [`ffi_generated`] | any | The reviewed `bindgen` declaration snapshot |
+//! | `ffi` | Windows | The `libloading` symbol table: every SDK call there is |
+//! | `backend` | Windows | [`M300Backend`] itself |
 //!
-//! Everything above is platform-neutral on purpose: the parts of the M300 path that can be wrong
-//! in a way that still looks plausible — an enum index, an error mapping, a callback payload
-//! check, a queue hand-off — are the parts Linux CI can hold on to.
+//! Only the last two need the operating system's loader, and they are the only two a bench can
+//! break without Linux CI noticing.
 //!
 //! # Unsafe policy
 //!
@@ -57,11 +60,21 @@ pub mod maps;
 pub mod resolver;
 pub mod shim;
 
+#[cfg(windows)]
+pub mod backend;
+#[cfg(windows)]
+pub mod ffi;
+
 pub use batch::BatchFault;
 pub use error::{NativeError, NativeFailure};
 pub use maps::{DeviceIdentity, FilterChoice, RangeSpan, RateChoice};
 pub use resolver::{Candidate, CandidateOrigin, ProbeInputs, ResolveError, ResolvedLibrary};
 pub use shim::{Drain, Handle, Shared};
+
+#[cfg(windows)]
+pub use backend::{M300Backend, DEFAULT_STALL_TIMEOUT};
+#[cfg(windows)]
+pub use ffi::{LoadError, Sdk};
 
 /// Whether this build can talk to a real M300 at all.
 ///
@@ -89,6 +102,8 @@ mod tests {
 
     #[test]
     fn the_expected_version_is_the_one_the_symbol_table_checks_for() {
+        // Two spellings of the same fact — the constant the binary logs and the numbers `ffi`
+        // compares against — kept from drifting apart.
         assert_eq!(
             EXPECTED_SDK_VERSION,
             format!(
