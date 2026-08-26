@@ -2,24 +2,25 @@
 //!
 //! Compiled only with the `gui` feature. It owns no rules: every control reads and writes the
 //! [`ProjectForm`], every action goes through [`UiController`], every string comes from
-//! [`crate::i18n`], and everything it displays about the instrument comes from one
-//! [`StatusSnapshot`] taken at the top of the frame. That division is what lets the
-//! interesting behaviour be tested without a display.
+//! [`crate::i18n`], every colour comes from the [`Palette`] of the theme in force, and
+//! everything it displays about the instrument comes from one [`StatusSnapshot`] taken at the
+//! top of the frame. That division is what lets the interesting behaviour be tested without a
+//! display.
 //!
 //! The layout is fixed and deliberately unlike a settings dialog:
 //!
 //! ```text
-//! ┌──────────────────────────────────────────────────────────────────────┐
-//! │ QuickVib · 项目名          [● 已连接] [● 空闲] [SCPI 15025] [中文│EN] │  title bar
-//! ├──────────────────────────────────────────────────────────────────────┤
-//! │ 文件▾  打开 保存 另存为 │ 应用 还原              配置 │ 高级          │  toolbar
-//! ├────────────────────────────────────────┬─────────────────────────────┤
-//! │ 项目信息 / 设备与采样 / 滤波器 / 量程   │        仪表面板              │
-//! │ 录制 / 通信端口 / 数据导出   (滚动)     │  状态 · 开始录制 · 停止      │
-//! │                                        │  峰值 / 有效值 / 峰峰值      │
-//! ├────────────────────────────────────────┴─────────────────────────────┤
-//! │ 空闲 · 已连接        已保存 …            实际监听端口 …    版本 1.0.0 │  status bar
-//! └──────────────────────────────────────────────────────────────────────┘
+//! ┌────────────────────────────────────────────────────────────────────────────────┐
+//! │ QuickVib · 项目名   [● 已连接] [● 空闲] [SCPI 15025] [浅色│深色] [中文│EN]      │  title bar
+//! ├────────────────────────────────────────────────────────────────────────────────┤
+//! │ 文件▾  打开 保存 另存为 │ 应用 还原                        配置 │ 高级          │  toolbar
+//! ├──────────────────────────────────────────────┬─────────────────────────────────┤
+//! │ 项目信息 / 设备与采样 / 滤波器 / 量程         │        仪表面板                  │
+//! │ 录制 / 通信端口 / 数据导出   (滚动)           │  状态 · 开始录制 · 停止          │
+//! │                                              │  峰值 / 有效值 / 峰峰值          │
+//! ├──────────────────────────────────────────────┴─────────────────────────────────┤
+//! │ 空闲 · 已连接        已保存 …            实际监听端口 …          版本 1.0.0     │  status bar
+//! └────────────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! The window runs on the main thread — a hard requirement of every desktop windowing system —
@@ -32,6 +33,7 @@ use eframe::egui::{self, Align, Color32, Layout, RichText, Vec2};
 use quickvib_core::{BackendKind, ExportFormat, SampleUnit};
 use quickvib_engine::State;
 
+use crate::appearance::{self, Theme, ThemeStore};
 use crate::controller::UiController;
 use crate::form::ProjectForm;
 use crate::i18n::{self, Label, Lang, LangStore};
@@ -49,6 +51,7 @@ use crate::theme::{self, Palette};
 /// compositor. The caller should fall back to the console path rather than exit.
 pub fn run(controller: UiController, options: GuiOptions) -> Result<(), String> {
     let app = QuickVibApp::new(controller, options);
+    let theme = app.theme;
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])
@@ -66,8 +69,8 @@ pub fn run(controller: UiController, options: GuiOptions) -> Result<(), String> 
         eframe::run_native(
             "quickvib",
             native,
-            Box::new(|cc| {
-                theme::install(&cc.egui_ctx);
+            Box::new(move |cc| {
+                theme::install(&cc.egui_ctx, theme);
                 Ok(Box::new(app) as Box<dyn eframe::App>)
             }),
         )
@@ -98,6 +101,8 @@ struct QuickVibApp {
     options: GuiOptions,
     lang: Lang,
     lang_store: Option<LangStore>,
+    theme: Theme,
+    theme_store: Option<ThemeStore>,
     tab: Tab,
     notice: Option<Notice>,
     field_errors: Vec<crate::FieldError>,
@@ -112,11 +117,14 @@ impl QuickVibApp {
             .path()
             .map_or_else(String::new, |path| path.display().to_string());
         let lang_store = LangStore::discover();
+        let theme_store = ThemeStore::discover();
         Self {
             controller,
             options,
             lang: i18n::startup_lang(lang_store.as_ref()),
             lang_store,
+            theme: appearance::startup_theme(theme_store.as_ref()),
+            theme_store,
             tab: Tab::Setup,
             notice: None,
             field_errors: Vec::new(),
@@ -129,6 +137,11 @@ impl QuickVibApp {
     /// A fixed string in the language the window is currently drawn in.
     fn t(&self, label: Label) -> &'static str {
         self.lang.t(label)
+    }
+
+    /// The colours the window is currently drawn in.
+    fn p(&self) -> &'static Palette {
+        Palette::of(self.theme)
     }
 
     // ── Actions ────────────────────────────────────────────────────────────────────────
@@ -204,13 +217,25 @@ impl QuickVibApp {
         }
     }
 
+    fn set_theme(&mut self, ctx: &egui::Context, theme: Theme) {
+        if self.theme == theme {
+            return;
+        }
+        self.theme = theme;
+        theme::apply(ctx, theme);
+        if let Some(store) = &self.theme_store {
+            store.write(theme);
+        }
+    }
+
     // ── Title bar ──────────────────────────────────────────────────────────────────────
 
     fn title_bar(&mut self, ctx: &egui::Context, status: &StatusSnapshot) {
+        let p = self.p();
         egui::TopBottomPanel::top("title-bar")
             .frame(
                 egui::Frame::none()
-                    .fill(Palette::CHROME)
+                    .fill(p.chrome)
                     .inner_margin(egui::Margin::symmetric(14.0, 8.0)),
             )
             .show(ctx, |ui| {
@@ -221,12 +246,12 @@ impl QuickVibApp {
                             RichText::new("QuickVib")
                                 .size(20.0)
                                 .strong()
-                                .color(Palette::ACCENT),
+                                .color(p.accent),
                         );
                         ui.label(
                             RichText::new(self.t(Label::Tagline))
                                 .size(11.0)
-                                .color(Palette::MUTED),
+                                .color(p.muted),
                         );
                     });
                     ui.add_space(10.0);
@@ -235,10 +260,13 @@ impl QuickVibApp {
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         self.language_switch(ui);
+                        ui.add_space(4.0);
+                        self.theme_switch(ui);
                         ui.add_space(6.0);
                         theme::chip(
                             ui,
-                            Palette::ACCENT,
+                            p,
+                            p.accent,
                             &format!(
                                 "{} {} · {} {}",
                                 self.t(Label::ScpiShort),
@@ -249,7 +277,8 @@ impl QuickVibApp {
                         );
                         theme::chip(
                             ui,
-                            state_color(status.state),
+                            p,
+                            state_color(p, status.state),
                             &format!(
                                 "{} {}",
                                 self.t(Label::RecordState),
@@ -258,11 +287,8 @@ impl QuickVibApp {
                         );
                         theme::chip(
                             ui,
-                            if status.connected {
-                                Palette::OK
-                            } else {
-                                Palette::BAD
-                            },
+                            p,
+                            if status.connected { p.ok } else { p.bad },
                             self.lang.t(status.link_label()),
                         );
                     });
@@ -271,6 +297,7 @@ impl QuickVibApp {
     }
 
     fn project_identity(&self, ui: &mut egui::Ui, status: &StatusSnapshot) {
+        let p = self.p();
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             let name = if status.project_name.is_empty() {
@@ -284,7 +311,7 @@ impl QuickVibApp {
                     ui.label(
                         RichText::new(self.t(Label::LabelModified))
                             .size(11.0)
-                            .color(Palette::WARN),
+                            .color(p.warn),
                     );
                 }
             });
@@ -292,49 +319,48 @@ impl QuickVibApp {
                 || self.t(Label::LabelUnsavedProject).to_owned(),
                 |path| path.display().to_string(),
             );
-            ui.label(RichText::new(path).size(11.0).color(Palette::MUTED));
+            ui.label(RichText::new(path).size(11.0).color(p.muted));
         });
     }
 
     fn language_switch(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        egui::Frame::none()
-            .fill(Palette::BACKDROP)
-            .rounding(egui::Rounding::same(6.0))
-            .stroke(egui::Stroke::new(1.0, Palette::EDGE))
-            .inner_margin(egui::Margin::symmetric(4.0, 3.0))
-            .show(ui, |ui| {
-                // The title bar lays its contents out from the right, and egui propagates
-                // that direction into nested rows — so the switch asks for a region of its
-                // own size and its own direction, and reads 中文 then EN either way.
-                ui.allocate_ui_with_layout(
-                    Vec2::new(76.0, 20.0),
-                    Layout::left_to_right(Align::Center),
-                    |ui| {
-                        for lang in [Lang::Zh, Lang::En] {
-                            let selected = self.lang == lang;
-                            if ui
-                                .selectable_label(
-                                    selected,
-                                    RichText::new(lang.endonym()).size(13.0),
-                                )
-                                .clicked()
-                            {
-                                self.set_lang(&ctx, lang);
-                            }
-                        }
-                    },
-                );
-            });
+        let picked = theme::segmented(
+            ui,
+            self.p(),
+            "language-switch",
+            76.0,
+            self.lang,
+            &[
+                (Lang::Zh, Lang::Zh.endonym()),
+                (Lang::En, Lang::En.endonym()),
+            ],
+        );
+        if let Some(lang) = picked {
+            self.set_lang(&ctx, lang);
+        }
+    }
+
+    /// 浅色 / 深色 beside the language switch: the two things about the window an operator
+    /// changes rather than configures, kept together in the one place both are remembered.
+    fn theme_switch(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let lang = self.lang;
+        let options = Theme::ALL.map(|theme| (theme, theme.name(lang)));
+        let picked = theme::segmented(ui, self.p(), "theme-switch", 104.0, self.theme, &options);
+        if let Some(theme) = picked {
+            self.set_theme(&ctx, theme);
+        }
     }
 
     // ── Toolbar ────────────────────────────────────────────────────────────────────────
 
     fn toolbar(&mut self, ctx: &egui::Context, running: bool) {
+        let p = self.p();
         egui::TopBottomPanel::top("toolbar")
             .frame(
                 egui::Frame::none()
-                    .fill(Palette::CHROME)
+                    .fill(p.chrome)
                     .inner_margin(egui::Margin::symmetric(12.0, 6.0)),
             )
             .show(ctx, |ui| {
@@ -370,9 +396,9 @@ impl QuickVibApp {
                         ] {
                             let selected = self.tab == tab;
                             let text = RichText::new(self.lang.t(label)).color(if selected {
-                                Palette::TEXT
+                                p.text
                             } else {
-                                Palette::MUTED
+                                p.muted
                             });
                             if ui.selectable_label(selected, text).clicked() {
                                 self.tab = tab;
@@ -407,11 +433,12 @@ impl QuickVibApp {
     // ── Configuration side ─────────────────────────────────────────────────────────────
 
     fn setup_tab(&mut self, ui: &mut egui::Ui, running: bool) {
+        let p = self.p();
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 if running {
-                    banner(ui, Palette::WARN, self.t(Label::HintRunningLock));
+                    banner(ui, p.warn, self.t(Label::HintRunningLock));
                 }
                 ui.add_enabled_ui(!running, |ui| {
                     self.project_card(ui);
@@ -427,14 +454,14 @@ impl QuickVibApp {
     }
 
     fn project_card(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        theme::card(ui, lang.t(Label::SectionProject), |ui| {
+        let (lang, p) = (self.lang, self.p());
+        theme::card(ui, p, lang.t(Label::SectionProject), |ui| {
             theme::field_grid(ui, "project-grid", |ui| {
-                theme::label(ui, lang.t(Label::FieldProjectName));
+                theme::label(ui, p, lang.t(Label::FieldProjectName));
                 theme::wide_text_field(ui, &mut self.controller.form_mut().name);
                 ui.end_row();
 
-                theme::label(ui, lang.t(Label::FieldDescription));
+                theme::label(ui, p, lang.t(Label::FieldDescription));
                 theme::wide_text_field(ui, &mut self.controller.form_mut().description);
                 ui.end_row();
             });
@@ -442,10 +469,10 @@ impl QuickVibApp {
     }
 
     fn acquisition_card(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        theme::card(ui, lang.t(Label::SectionAcquisition), |ui| {
+        let (lang, p) = (self.lang, self.p());
+        theme::card(ui, p, lang.t(Label::SectionAcquisition), |ui| {
             theme::field_grid(ui, "acquisition-grid", |ui| {
-                theme::label(ui, lang.t(Label::FieldSampleRate));
+                theme::label(ui, p, lang.t(Label::FieldSampleRate));
                 let mut rate = self.controller.form().sample_rate_text().to_owned();
                 if theme::text_field(ui, &mut rate).changed() {
                     self.controller.form_mut().set_sample_rate_text(rate);
@@ -454,6 +481,7 @@ impl QuickVibApp {
                 // surface carry — but nobody reads 100000 as a hundred kilohertz at a glance.
                 theme::hint(
                     ui,
+                    p,
                     &format!(
                         "Hz  =  {}",
                         i18n::frequency(parse_hz(self.controller.form()))
@@ -461,7 +489,7 @@ impl QuickVibApp {
                 );
                 ui.end_row();
 
-                theme::label(ui, lang.t(Label::FieldDataType));
+                theme::label(ui, p, lang.t(Label::FieldDataType));
                 let form = self.controller.form_mut();
                 egui::ComboBox::from_id_salt("unit")
                     .width(theme::FIELD_WIDTH)
@@ -477,7 +505,7 @@ impl QuickVibApp {
                     });
                 ui.end_row();
 
-                theme::label(ui, lang.t(Label::FieldBackend));
+                theme::label(ui, p, lang.t(Label::FieldBackend));
                 let form = self.controller.form_mut();
                 egui::ComboBox::from_id_salt("backend")
                     .width(theme::FIELD_WIDTH)
@@ -497,10 +525,10 @@ impl QuickVibApp {
     }
 
     fn filter_card(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        theme::card(ui, lang.t(Label::SectionFilters), |ui| {
+        let (lang, p) = (self.lang, self.p());
+        theme::card(ui, p, lang.t(Label::SectionFilters), |ui| {
             theme::field_grid(ui, "filter-grid", |ui| {
-                theme::label(ui, lang.t(Label::FieldLowPass));
+                theme::label(ui, p, lang.t(Label::FieldLowPass));
                 let pinned = self.controller.form().lpf_locked();
                 let mut lpf = self.controller.form().lpf_hz_text().to_owned();
                 let response = ui.add_enabled(
@@ -519,20 +547,20 @@ impl QuickVibApp {
                 }
                 ui.end_row();
 
-                theme::label(ui, lang.t(Label::FieldHighPass));
+                theme::label(ui, p, lang.t(Label::FieldHighPass));
                 theme::text_field(ui, &mut self.controller.form_mut().high_pass_hz);
-                theme::hint(ui, &format!("Hz  ·  {}", lang.t(Label::HintHighPassOff)));
+                theme::hint(ui, p, &format!("Hz  ·  {}", lang.t(Label::HintHighPassOff)));
                 ui.end_row();
             });
             ui.add_space(4.0);
-            banner(ui, Palette::ACCENT, lang.t(Label::HintFilterPairing));
-            theme::hint(ui, lang.t(Label::HintNyquist));
+            banner(ui, p.accent, lang.t(Label::HintFilterPairing));
+            theme::hint(ui, p, lang.t(Label::HintNyquist));
         });
     }
 
     fn range_card(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        theme::card(ui, lang.t(Label::SectionRanges), |ui| {
+        let (lang, p) = (self.lang, self.p());
+        theme::card(ui, p, lang.t(Label::SectionRanges), |ui| {
             theme::field_grid(ui, "range-grid", |ui| {
                 let active = self.controller.form().unit;
                 for (unit, label) in [
@@ -545,9 +573,9 @@ impl QuickVibApp {
                 ] {
                     // The range that belongs to the configured data type is the one in force.
                     if unit == active {
-                        ui.label(RichText::new(lang.t(label)).strong().color(Palette::TEXT));
+                        ui.label(RichText::new(lang.t(label)).strong().color(p.text));
                     } else {
-                        theme::label(ui, lang.t(label));
+                        theme::label(ui, p, lang.t(label));
                     }
                     let form = self.controller.form_mut();
                     let field = match unit {
@@ -556,7 +584,7 @@ impl QuickVibApp {
                         SampleUnit::AccelerationMPerSec2 => &mut form.acceleration_range,
                     };
                     theme::text_field(ui, field);
-                    theme::hint(ui, i18n::unit_symbol(unit));
+                    theme::hint(ui, p, i18n::unit_symbol(unit));
                     ui.end_row();
                 }
             });
@@ -564,41 +592,41 @@ impl QuickVibApp {
     }
 
     fn recording_card(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        theme::card(ui, lang.t(Label::SectionRecording), |ui| {
+        let (lang, p) = (self.lang, self.p());
+        theme::card(ui, p, lang.t(Label::SectionRecording), |ui| {
             theme::field_grid(ui, "recording-grid", |ui| {
-                theme::label(ui, lang.t(Label::FieldDuration));
+                theme::label(ui, p, lang.t(Label::FieldDuration));
                 theme::text_field(ui, &mut self.controller.form_mut().duration_seconds);
-                theme::hint(ui, i18n::seconds(lang, 1.0).trim_start_matches("1 "));
+                theme::hint(ui, p, i18n::seconds(lang, 1.0).trim_start_matches("1 "));
                 ui.end_row();
             });
         });
     }
 
     fn ports_card(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
+        let (lang, p) = (self.lang, self.p());
         let rows = self.port_rows();
-        theme::card(ui, lang.t(Label::SectionPorts), |ui| {
+        theme::card(ui, p, lang.t(Label::SectionPorts), |ui| {
             // What is bound right now: fact, not setting. The window never shows the
             // project's copy of a port where the live one belongs.
             ui.label(
                 RichText::new(lang.t(Label::ListeningPorts))
                     .size(12.5)
-                    .color(Palette::MUTED),
+                    .color(p.muted),
             );
             ui.add_space(4.0);
             theme::field_grid(ui, "live-ports-grid", |ui| {
-                theme::label(ui, lang.t(Label::ScpiShort));
-                theme::readout(ui, &self.options.live.scpi_text(), Palette::OK);
-                theme::hint(ui, lang.t(Label::HintScpiPeer));
+                theme::label(ui, p, lang.t(Label::ScpiShort));
+                theme::readout(ui, &self.options.live.scpi_text(), p.ok);
+                theme::hint(ui, p, lang.t(Label::HintScpiPeer));
                 ui.end_row();
 
-                theme::label(ui, lang.t(Label::DeviceShort));
-                theme::readout(ui, &self.options.live.device_text(), Palette::OK);
-                theme::hint(ui, lang.t(Label::HintDevicePeer));
+                theme::label(ui, p, lang.t(Label::DeviceShort));
+                theme::readout(ui, &self.options.live.device_text(), p.ok);
+                theme::hint(ui, p, lang.t(Label::HintDevicePeer));
                 ui.end_row();
             });
-            theme::hint(ui, lang.t(Label::HintLivePorts));
+            theme::hint(ui, p, lang.t(Label::HintLivePorts));
 
             ui.add_space(10.0);
             ui.separator();
@@ -607,31 +635,31 @@ impl QuickVibApp {
             ui.label(
                 RichText::new(lang.t(Label::FieldProjectPorts))
                     .size(12.5)
-                    .color(Palette::MUTED),
+                    .color(p.muted),
             );
             ui.add_space(4.0);
             theme::field_grid(ui, "project-ports-grid", |ui| {
-                theme::label(ui, lang.t(Label::FieldScpiPort));
+                theme::label(ui, p, lang.t(Label::FieldScpiPort));
                 theme::text_field(ui, &mut self.controller.form_mut().scpi_port);
                 ui.end_row();
 
-                theme::label(ui, lang.t(Label::FieldDevicePort));
+                theme::label(ui, p, lang.t(Label::FieldDevicePort));
                 theme::text_field(ui, &mut self.controller.form_mut().device_port);
                 ui.end_row();
             });
-            theme::hint(ui, lang.t(Label::HintProjectPorts));
+            theme::hint(ui, p, lang.t(Label::HintProjectPorts));
             if crate::ports::any_mismatch(&rows) {
                 ui.add_space(6.0);
-                banner(ui, Palette::WARN, lang.t(Label::HintPortMismatch));
+                banner(ui, p.warn, lang.t(Label::HintPortMismatch));
             }
         });
     }
 
     fn export_card(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        theme::card(ui, lang.t(Label::SectionExport), |ui| {
+        let (lang, p) = (self.lang, self.p());
+        theme::card(ui, p, lang.t(Label::SectionExport), |ui| {
             theme::field_grid(ui, "export-grid", |ui| {
-                theme::label(ui, lang.t(Label::FieldExportFormat));
+                theme::label(ui, p, lang.t(Label::FieldExportFormat));
                 let form = self.controller.form_mut();
                 ui.horizontal(|ui| {
                     for format in [ExportFormat::Csv, ExportFormat::Txt] {
@@ -644,12 +672,12 @@ impl QuickVibApp {
                 });
                 ui.end_row();
 
-                theme::label(ui, lang.t(Label::FieldExportDirectory));
+                theme::label(ui, p, lang.t(Label::FieldExportDirectory));
                 theme::wide_text_field(ui, &mut self.controller.form_mut().export_directory);
-                theme::hint(ui, lang.t(Label::HintExportDirectory));
+                theme::hint(ui, p, lang.t(Label::HintExportDirectory));
                 ui.end_row();
 
-                theme::label(ui, lang.t(Label::FieldExportOptions));
+                theme::label(ui, p, lang.t(Label::FieldExportOptions));
                 let form = self.controller.form_mut();
                 ui.vertical(|ui| {
                     ui.checkbox(&mut form.include_header, lang.t(Label::OptionCsvHeader));
@@ -664,32 +692,32 @@ impl QuickVibApp {
         if self.field_errors.is_empty() {
             return;
         }
-        let lang = self.lang;
+        let (lang, p) = (self.lang, self.p());
         egui::Frame::none()
-            .fill(Palette::BAD.gamma_multiply(0.12))
-            .stroke(egui::Stroke::new(1.0, Palette::BAD))
+            .fill(p.bad.gamma_multiply(0.12))
+            .stroke(egui::Stroke::new(1.0, p.bad))
             .rounding(egui::Rounding::same(8.0))
             .inner_margin(egui::Margin::symmetric(14.0, 12.0))
             .show(ui, |ui| {
                 ui.label(
                     RichText::new(lang.t(Label::ErrorsHeading))
                         .strong()
-                        .color(Palette::BAD),
+                        .color(p.bad),
                 );
                 ui.add_space(4.0);
                 for error in &self.field_errors {
-                    ui.label(RichText::new(error.localized(lang)).color(Palette::BAD));
+                    ui.label(RichText::new(error.localized(lang)).color(p.bad));
                 }
             });
         ui.add_space(10.0);
     }
 
     fn advanced_tab(&self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        theme::card(ui, lang.t(Label::AdvancedTitle), |ui| {
-            ui.label(RichText::new(lang.t(Label::AdvancedBody)).color(Palette::MUTED));
+        let (lang, p) = (self.lang, self.p());
+        theme::card(ui, p, lang.t(Label::AdvancedTitle), |ui| {
+            ui.label(RichText::new(lang.t(Label::AdvancedBody)).color(p.muted));
             ui.add_space(8.0);
-            ui.label(RichText::new(lang.t(Label::AdvancedBody2)).color(Palette::MUTED));
+            ui.label(RichText::new(lang.t(Label::AdvancedBody2)).color(p.muted));
         });
     }
 
@@ -717,8 +745,8 @@ impl QuickVibApp {
     }
 
     fn state_block(&self, ui: &mut egui::Ui, status: &StatusSnapshot) {
-        let lang = self.lang;
-        let color = state_color(status.state);
+        let (lang, p) = (self.lang, self.p());
+        let color = state_color(p, status.state);
         egui::Frame::none()
             .fill(color.gamma_multiply(0.14))
             .stroke(egui::Stroke::new(1.0, color))
@@ -729,7 +757,7 @@ impl QuickVibApp {
                 ui.label(
                     RichText::new(lang.t(Label::RecordState))
                         .size(12.0)
-                        .color(Palette::MUTED),
+                        .color(p.muted),
                 );
                 ui.horizontal(|ui| {
                     theme::led(ui, color);
@@ -745,28 +773,21 @@ impl QuickVibApp {
                     ui.label(
                         RichText::new(lang.t(Label::LinkState))
                             .size(12.0)
-                            .color(Palette::MUTED),
+                            .color(p.muted),
                     );
-                    theme::led(
-                        ui,
-                        if status.connected {
-                            Palette::OK
-                        } else {
-                            Palette::BAD
-                        },
-                    );
+                    theme::led(ui, if status.connected { p.ok } else { p.bad });
                     ui.label(RichText::new(lang.t(status.link_label())).size(13.0));
                 });
             });
     }
 
     fn transport_buttons(&mut self, ui: &mut egui::Ui, status: &StatusSnapshot) {
-        let lang = self.lang;
+        let (lang, p) = (self.lang, self.p());
         let running = status.is_running();
         let width = (ui.available_width() - 8.0) / 2.0;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-            if theme::action_button(ui, lang.t(Label::ActionStart), Palette::OK, !running, width)
+            if theme::action_button(ui, p, lang.t(Label::ActionStart), p.ok, !running, width)
                 .clicked()
             {
                 self.notice = Some(match self.controller.start() {
@@ -774,7 +795,7 @@ impl QuickVibApp {
                     Err(error) => Notice::failed(error.localized(lang)),
                 });
             }
-            if theme::action_button(ui, lang.t(Label::ActionStop), Palette::LIVE, running, width)
+            if theme::action_button(ui, p, lang.t(Label::ActionStop), p.live, running, width)
                 .clicked()
             {
                 self.controller.stop();
@@ -784,8 +805,8 @@ impl QuickVibApp {
     }
 
     fn measurement_block(&self, ui: &mut egui::Ui, status: &StatusSnapshot) {
-        let lang = self.lang;
-        theme::card(ui, lang.t(Label::SectionMeasurements), |ui| {
+        let (lang, p) = (self.lang, self.p());
+        theme::card(ui, p, lang.t(Label::SectionMeasurements), |ui| {
             ui.set_width(ui.available_width());
             match status.measurements {
                 Some(measurements) => {
@@ -795,18 +816,14 @@ impl QuickVibApp {
                         (Label::MeasPeakToPeak, measurements.peak_to_peak),
                     ] {
                         ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(lang.t(label))
-                                    .size(13.0)
-                                    .color(Palette::MUTED),
-                            );
+                            ui.label(RichText::new(lang.t(label)).size(13.0).color(p.muted));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.label(
                                     RichText::new(i18n::measurement(value, status.unit))
                                         .monospace()
                                         .size(17.0)
                                         .strong()
-                                        .color(Palette::TEXT),
+                                        .color(p.text),
                                 );
                             });
                         });
@@ -816,11 +833,13 @@ impl QuickVibApp {
                     ui.add_space(4.0);
                     small_row(
                         ui,
+                        p,
                         lang.t(Label::MeasSamples),
                         &status.sample_count.to_string(),
                     );
                     small_row(
                         ui,
+                        p,
                         lang.t(Label::LabelDuration),
                         &i18n::seconds(lang, status.duration_seconds),
                     );
@@ -829,7 +848,7 @@ impl QuickVibApp {
                     ui.label(
                         RichText::new(lang.t(Label::NoCapture))
                             .size(13.0)
-                            .color(Palette::MUTED),
+                            .color(p.muted),
                     );
                 }
             }
@@ -865,21 +884,24 @@ impl QuickVibApp {
     }
 
     fn link_block(&self, ui: &mut egui::Ui, status: &StatusSnapshot) {
-        let lang = self.lang;
-        theme::card(ui, lang.t(Label::SectionLink), |ui| {
+        let (lang, p) = (self.lang, self.p());
+        theme::card(ui, p, lang.t(Label::SectionLink), |ui| {
             ui.set_width(ui.available_width());
             small_row(
                 ui,
+                p,
                 lang.t(Label::LabelBackend),
                 i18n::backend_label(lang, self.options.backend),
             );
             small_row(
                 ui,
+                p,
                 lang.t(Label::FieldSampleRate),
                 &i18n::frequency(status.sample_rate_hz),
             );
             small_row(
                 ui,
+                p,
                 lang.t(Label::LabelPeer),
                 &status.device_peer.map_or_else(
                     || lang.t(Label::LabelNone).to_owned(),
@@ -888,11 +910,13 @@ impl QuickVibApp {
             );
             small_row(
                 ui,
+                p,
                 lang.t(Label::LabelSessions),
                 &status.sessions.to_string(),
             );
             small_row(
                 ui,
+                p,
                 lang.t(Label::LabelPendingErrors),
                 &status.pending_errors.to_string(),
             );
@@ -900,7 +924,7 @@ impl QuickVibApp {
             ui.label(
                 RichText::new(lang.t(Label::LabelIdentity))
                     .size(12.0)
-                    .color(Palette::MUTED),
+                    .color(p.muted),
             );
             ui.label(RichText::new(&status.identity).size(11.5).monospace());
         });
@@ -909,39 +933,31 @@ impl QuickVibApp {
     // ── Status bar and dialogs ─────────────────────────────────────────────────────────
 
     fn status_bar(&self, ctx: &egui::Context, status: &StatusSnapshot) {
-        let lang = self.lang;
+        let (lang, p) = (self.lang, self.p());
         egui::TopBottomPanel::bottom("status-bar")
             .exact_height(30.0)
             .frame(
                 egui::Frame::none()
-                    .fill(Palette::CHROME)
+                    .fill(p.chrome)
                     .inner_margin(egui::Margin::symmetric(14.0, 5.0)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    theme::led(ui, state_color(status.state));
+                    theme::led(ui, state_color(p, status.state));
                     ui.label(RichText::new(status.headline(lang)).size(12.5));
                     ui.separator();
                     match &self.notice {
                         Some(notice) if notice.ok => {
-                            ui.label(
-                                RichText::new(notice.text(lang))
-                                    .size(12.5)
-                                    .color(Palette::OK),
-                            );
+                            ui.label(RichText::new(notice.text(lang)).size(12.5).color(p.ok));
                         }
                         Some(notice) => {
-                            ui.label(
-                                RichText::new(notice.text(lang))
-                                    .size(12.5)
-                                    .color(Palette::BAD),
-                            );
+                            ui.label(RichText::new(notice.text(lang)).size(12.5).color(p.bad));
                         }
                         None => {
                             ui.label(
                                 RichText::new(lang.t(Label::NoticeReady))
                                     .size(12.5)
-                                    .color(Palette::MUTED),
+                                    .color(p.muted),
                             );
                         }
                     }
@@ -954,7 +970,7 @@ impl QuickVibApp {
                                 self.options.version
                             ))
                             .size(12.0)
-                            .color(Palette::MUTED),
+                            .color(p.muted),
                         );
                         ui.separator();
                         // The ports here are the bound ones, always — the status bar is the
@@ -969,7 +985,7 @@ impl QuickVibApp {
                                 self.options.live.device_text()
                             ))
                             .size(12.0)
-                            .color(Palette::MUTED),
+                            .color(p.muted),
                         );
                     });
                 });
@@ -980,6 +996,7 @@ impl QuickVibApp {
         let Some(prompt) = self.prompt else {
             return;
         };
+        let p = self.p();
         let (title, action) = match prompt {
             Prompt::Open => (Label::DialogOpen, Label::ActionOpen),
             Prompt::SaveAs => (Label::DialogSaveAs, Label::ActionSave),
@@ -994,7 +1011,7 @@ impl QuickVibApp {
                 ui.label(
                     RichText::new(self.t(Label::DialogPath))
                         .size(12.5)
-                        .color(Palette::MUTED),
+                        .color(p.muted),
                 );
                 ui.add_space(4.0);
                 let response =
@@ -1030,6 +1047,7 @@ impl eframe::App for QuickVibApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let status = self.controller.snapshot();
         let running = status.is_running();
+        let p = self.p();
 
         self.title_bar(ctx, &status);
         self.toolbar(ctx, running);
@@ -1040,7 +1058,7 @@ impl eframe::App for QuickVibApp {
             .resizable(false)
             .frame(
                 egui::Frame::none()
-                    .fill(Palette::INSTRUMENT)
+                    .fill(p.instrument)
                     .inner_margin(egui::Margin::symmetric(14.0, 0.0)),
             )
             .show(ctx, |ui| {
@@ -1052,7 +1070,7 @@ impl eframe::App for QuickVibApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
-                    .fill(Palette::BACKDROP)
+                    .fill(p.backdrop)
                     .inner_margin(egui::Margin::symmetric(14.0, 12.0)),
             )
             .show(ctx, |ui| match self.tab {
@@ -1070,13 +1088,13 @@ impl eframe::App for QuickVibApp {
 
 /// The colour that stands for an instrument state, used by the LED, the chip and the big
 /// state block so all three always agree.
-fn state_color(state: State) -> Color32 {
+fn state_color(p: &Palette, state: State) -> Color32 {
     match state {
-        State::Idle => Palette::MUTED,
-        State::Armed => Palette::WARN,
-        State::Recording => Palette::LIVE,
-        State::Complete => Palette::OK,
-        State::Aborted => Palette::BAD,
+        State::Idle => p.muted,
+        State::Armed => p.warn,
+        State::Recording => p.live,
+        State::Complete => p.ok,
+        State::Aborted => p.bad,
     }
 }
 
@@ -1096,9 +1114,9 @@ fn banner(ui: &mut egui::Ui, color: Color32, text: &str) {
 
 /// A dim label with its value pushed to the right edge, as used all down the instrument
 /// column.
-fn small_row(ui: &mut egui::Ui, label: &str, value: &str) {
+fn small_row(ui: &mut egui::Ui, p: &Palette, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(12.0).color(Palette::MUTED));
+        ui.label(RichText::new(label).size(12.0).color(p.muted));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(RichText::new(value).size(12.5));
         });

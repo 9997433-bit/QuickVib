@@ -1,15 +1,17 @@
 //! The QuickVib desktop front end.
 //!
-//! The crate is deliberately split in two. [`form`], [`controller`], [`i18n`], [`ports`] and
-//! [`options`] are the view *model*: plain data, plain functions, no windowing dependency, and
-//! therefore unit-testable on a CI box with no display. [`window`] is the egui/eframe view,
-//! compiled only with the `gui` feature, and it contains no rules of its own — every edit it
-//! makes goes through [`UiController`], every string it draws comes from [`i18n`].
+//! The crate is deliberately split in two. [`form`], [`controller`], [`i18n`], [`appearance`],
+//! [`ports`] and [`options`] are the view *model*: plain data, plain functions, no windowing
+//! dependency, and therefore unit-testable on a CI box with no display. [`window`] is the
+//! egui/eframe view, compiled only with the `gui` feature, and it contains no rules of its
+//! own — every edit it makes goes through [`UiController`], every string it draws comes from
+//! [`i18n`], every colour from the `theme` palette [`appearance`] selected.
 //!
-//! The window is a **factory instrument panel, drawn in Simplified Chinese by default**:
-//! configuration on the left, a live instrument column on the right, and a title bar that
-//! names the connection, the record state and the ports the process is really listening on.
-//! English is one click away in the title bar; Chinese is what a first launch shows.
+//! The window is a **factory instrument panel, drawn in Simplified Chinese on a dark console
+//! by default**: configuration on the left, a live instrument column on the right, and a title
+//! bar that names the connection, the record state and the ports the process is really
+//! listening on. English and the light palette are each one click away in the title bar;
+//! Chinese and dark are what a first launch shows.
 //!
 //! The GUI never owns the instrument. It holds an `Arc<Engine>` — the same engine the SCPI
 //! sessions dispatch onto — so a field changed in the window and a `CONF:REC:DUR` sent over
@@ -41,6 +43,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod appearance;
 pub mod controller;
 mod font;
 pub mod form;
@@ -54,6 +57,7 @@ pub mod theme;
 #[cfg(feature = "gui")]
 pub mod window;
 
+pub use appearance::{Theme, ThemeStore};
 pub use controller::{Action, ActionError, ApplyOutcome, RestartField, UiController};
 pub use form::{starter_project, FieldError, Issue, ProjectForm};
 pub use i18n::{Label, Lang, LangStore};

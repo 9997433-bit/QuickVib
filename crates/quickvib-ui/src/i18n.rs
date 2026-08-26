@@ -110,6 +110,9 @@ labels! {
     // ── Title bar ──────────────────────────────────────────────────────────────────────
     Tagline => "激光测振仪控制台", "Laser vibrometer console";
     Language => "语言", "Language";
+    Theme => "主题", "Theme";
+    ThemeLight => "浅色", "Light";
+    ThemeDark => "深色", "Dark";
     LinkState => "连接状态", "Link";
     RecordState => "录制状态", "Record";
     Connected => "已连接", "Connected";
