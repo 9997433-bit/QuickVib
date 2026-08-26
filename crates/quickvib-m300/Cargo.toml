@@ -1,6 +1,6 @@
 [package]
 name = "quickvib-m300"
-description = "Windows-only M300 SDK v1.2.0 interop for QuickVib. Scaffolding only: no SDK calls yet."
+description = "Windows-only M300 SDK v1.2.0 interop for QuickVib: the DeviceBackend that drives real hardware."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,6 +18,13 @@ default = []
 # Needs `libclang` and `m300.h`, neither of which exists in CI, so it is never enabled there
 # (docs/PLAN.md 11, docs/M300-NATIVE.md 4).
 bindgen = ["dep:bindgen"]
+
+# The index tables, the error mapping and the callback payload checks are ordinary Rust over the
+# workspace's own vocabulary types, so they compile and are unit-tested on Linux exactly as they
+# are on the bench. Neither dependency is third-party (ci/check-deps.sh, docs/PLAN.md 6.3).
+[dependencies]
+quickvib-core.workspace = true
+quickvib-device.workspace = true
 
 # The SDK is opened at runtime with `LoadLibraryW`/`GetProcAddress` through `libloading`, so the
 # shipped `quickvib.exe` has no import-library link dependency on the vendor DLL and starts fine

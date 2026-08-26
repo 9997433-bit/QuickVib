@@ -89,6 +89,12 @@ impl StreamRequest {
     }
 }
 
+/// The host a backend that owns its own listener binds when nothing says otherwise: every
+/// IPv4 interface. The same string the project schema and `--bind` default to; it is spelled
+/// out here rather than imported because this crate deliberately depends on nothing but
+/// `quickvib-core`.
+pub const DEFAULT_BIND_HOST: &str = "0.0.0.0";
+
 /// Everything a backend needs in order to bring its transport up.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceOpenOptions {
@@ -96,6 +102,13 @@ pub struct DeviceOpenOptions {
     pub sample_rate_hz: f64,
     /// Unit declared by the project.
     pub unit: SampleUnit,
+    /// Host to bind, for a backend that owns its listening socket.
+    ///
+    /// Only the M300 backend reads this: the SDK binds the device port itself, so `--bind`
+    /// and `server.bindHost` have to reach it as arguments rather than through the device
+    /// server QuickVib does not start on that path (`docs/M300-NATIVE.md` §6). The mock has
+    /// no socket and the `tcp` backend is fed by a listener the application binds.
+    pub bind_host: String,
     /// Inbound port the device dials.
     pub device_port: u16,
     /// Peers permitted on the inbound link. Empty accepts any peer.
@@ -113,6 +126,7 @@ impl DeviceOpenOptions {
         Self {
             sample_rate_hz,
             unit,
+            bind_host: DEFAULT_BIND_HOST.to_owned(),
             device_port: 9123,
             allowed_peers: Vec::new(),
             connect_timeout: Duration::from_secs(30),
@@ -238,6 +252,7 @@ mod tests {
     fn open_options_carry_the_schema_defaults() {
         let o = DeviceOpenOptions::new(100_000.0, SampleUnit::DisplacementUm);
         assert_eq!(o.device_port, 9123);
+        assert_eq!(o.bind_host, DEFAULT_BIND_HOST);
         assert_eq!(o.connect_timeout, Duration::from_secs(30));
         assert!(o.allowed_peers.is_empty());
         assert!(o.sdk_path.is_none());

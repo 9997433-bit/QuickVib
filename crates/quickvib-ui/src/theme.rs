@@ -362,6 +362,29 @@ pub fn action_button(
     ui.add_enabled(enabled, button)
 }
 
+/// Every colour that carries a meaning, with the surface it is drawn on — what the contrast
+/// test walks, and the list a new accent has to join.
+#[cfg(test)]
+fn meaning_colours(p: &Palette) -> Vec<(&'static str, Color32, Color32)> {
+    vec![
+        ("text on a card", p.text, p.card),
+        ("strong text on a card", p.strong, p.card),
+        ("muted text on a card", p.muted, p.card),
+        ("muted text on the instrument", p.muted, p.instrument),
+        ("muted text on the chrome", p.muted, p.chrome),
+        ("accent on a card", p.accent, p.card),
+        ("accent on the chrome", p.accent, p.chrome),
+        ("ok on a card", p.ok, p.card),
+        ("ok on the instrument", p.ok, p.instrument),
+        ("live on the instrument", p.live, p.instrument),
+        ("warn on a card", p.warn, p.card),
+        ("bad on a card", p.bad, p.card),
+        ("text in a field", p.text, p.sunken),
+        ("text on a control", p.text, p.control),
+        ("text on a selected item", p.text, p.selection),
+    ]
+}
+
 /// A segmented switch of the kind the title bar carries: two or more short labels in one
 /// bordered strip, of which exactly one is lit. Returns the value the operator picked, if any.
 ///
@@ -404,4 +427,86 @@ pub fn segmented<T: Copy + PartialEq>(
             });
         });
     picked
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    /// The WCAG relative luminance of an opaque colour.
+    fn luminance(color: Color32) -> f32 {
+        let channel = |value: u8| {
+            let value = f32::from(value) / 255.0;
+            if value <= 0.040_45 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+    }
+
+    /// The WCAG contrast ratio between two opaque colours, 1.0 (identical) to 21.0.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn a_theme_picks_exactly_one_palette() {
+        assert_eq!(Palette::of(Theme::Dark).backdrop, DARK.backdrop);
+        assert_eq!(Palette::of(Theme::Light).backdrop, LIGHT.backdrop);
+        assert_ne!(DARK.backdrop, LIGHT.backdrop);
+        assert!(luminance(DARK.backdrop) < luminance(DARK.text));
+        assert!(luminance(LIGHT.backdrop) > luminance(LIGHT.text));
+    }
+
+    #[test]
+    fn the_light_palette_is_readable_at_body_size() {
+        // 4.5:1 is the WCAG AA threshold for ordinary text, and the light panel is the one
+        // that has to earn it from scratch: a hue that reads well on the black console is
+        // routinely a smudge on white.
+        for (what, fg, bg) in meaning_colours(&LIGHT) {
+            let ratio = contrast(fg, bg);
+            assert!(
+                ratio >= 4.5,
+                "{what} is only {ratio:.2}:1 in the light theme"
+            );
+        }
+    }
+
+    #[test]
+    fn the_dark_palette_is_readable_too() {
+        // The dark console ships as it always has, and its one saturated red sits just under
+        // the body threshold at the 26 px it is drawn in — the large-text bar, 3:1, is the
+        // honest one to hold it to. Everything else clears the body threshold.
+        for (what, fg, bg) in meaning_colours(&DARK) {
+            let ratio = contrast(fg, bg);
+            assert!(
+                ratio >= 3.0,
+                "{what} is only {ratio:.2}:1 in the dark theme"
+            );
+        }
+    }
+
+    #[test]
+    fn both_palettes_separate_their_surfaces() {
+        // Cards that melt into the backdrop turn the panel back into a pile of settings.
+        for palette in [&DARK, &LIGHT] {
+            for (what, a, b) in [
+                ("card against backdrop", palette.card, palette.backdrop),
+                ("chrome against backdrop", palette.chrome, palette.backdrop),
+                (
+                    "instrument against backdrop",
+                    palette.instrument,
+                    palette.backdrop,
+                ),
+                ("edge against card", palette.edge, palette.card),
+            ] {
+                assert_ne!(a, b, "{what} is the same colour");
+            }
+        }
+    }
 }

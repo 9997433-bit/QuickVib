@@ -39,6 +39,17 @@ pub enum DeviceError {
         /// What was asked for.
         detail: String,
     },
+    /// A value handed to the transport was rejected as illegal — a null pointer or an
+    /// out-of-range enum index in a native call. Maps to `-224`.
+    ///
+    /// Distinct from [`DeviceError::Unsupported`], which is a configuration this backend cannot
+    /// satisfy: this one is a value the transport itself calls invalid, which is usually a
+    /// QuickVib bug and is logged as such. The M300 SDK's `M300_ERR_INVALID_ARG` is the only
+    /// producer today (`docs/M300-NATIVE.md` §5).
+    IllegalParameter {
+        /// What was rejected.
+        detail: String,
+    },
 }
 
 impl DeviceError {
@@ -52,6 +63,7 @@ impl DeviceError {
             }
             Self::Timeout { .. } => ScpiError::TimeoutError,
             Self::Unsupported { .. } => ScpiError::SettingsConflict,
+            Self::IllegalParameter { .. } => ScpiError::IllegalParameterValue,
         }
     }
 
@@ -78,6 +90,14 @@ impl DeviceError {
             detail: detail.into(),
         }
     }
+
+    /// Convenience constructor for a value the transport rejected as illegal.
+    #[must_use]
+    pub fn illegal_parameter(detail: impl Into<String>) -> Self {
+        Self::IllegalParameter {
+            detail: detail.into(),
+        }
+    }
 }
 
 impl fmt::Display for DeviceError {
@@ -91,6 +111,9 @@ impl fmt::Display for DeviceError {
                 write!(f, "device sdk error {code}: {message}")
             }
             Self::Unsupported { detail } => write!(f, "unsupported device request: {detail}"),
+            Self::IllegalParameter { detail } => {
+                write!(f, "illegal device parameter: {detail}")
+            }
         }
     }
 }
@@ -133,6 +156,10 @@ mod tests {
         assert_eq!(
             DeviceError::unsupported("rate").scpi_error(),
             ScpiError::SettingsConflict
+        );
+        assert_eq!(
+            DeviceError::illegal_parameter("rate index 255").scpi_error(),
+            ScpiError::IllegalParameterValue
         );
     }
 

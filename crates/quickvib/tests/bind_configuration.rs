@@ -38,7 +38,11 @@ fn build_on_ephemeral_ports(mut options: Options) -> App {
 
 fn assert_both_listeners_use(app: &App, expected: IpAddr) {
     assert_eq!(app.scpi_addr().unwrap().ip(), expected);
-    assert_eq!(app.device_addr().unwrap().ip(), expected);
+    let device = app
+        .device_addr()
+        .unwrap()
+        .expect("mock and tcp leave the device port to QuickVib");
+    assert_eq!(device.ip(), expected);
 }
 
 #[test]
