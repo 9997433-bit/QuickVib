@@ -230,6 +230,7 @@ impl AppBuilder {
                     kind,
                     project.as_ref(),
                     Arc::clone(&clock),
+                    Arc::clone(&logger),
                     &bind_host,
                     device_port,
                     self.pace_mock,

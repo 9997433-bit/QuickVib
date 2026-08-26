@@ -22,7 +22,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use quickvib_core::{BackendKind, Clock, SampleUnit};
+use quickvib_core::{BackendKind, Clock, Logger, SampleUnit};
 use quickvib_device::{
     DeviceBackend, DeviceOpenOptions, MockBackend, MockSignalSpec, SampleChannel, SampleSink,
     SignalComponent, StreamBackend,
@@ -125,6 +125,10 @@ pub const fn owns_device_listener(kind: BackendKind) -> bool {
 /// `m300` they are handed straight to `m300_server_create_ex`, because there the SDK is the
 /// listener.
 ///
+/// `logger` reaches the M300 backend only. It is the one backend whose failures carry detail
+/// the SCPI response cannot: a `-241` says "Hardware missing", while the log says which paths
+/// were probed for the DLL and what the operating system said about each.
+///
 /// # Errors
 /// [`BackendError::Unavailable`] when `m300` is selected on a host or build that cannot
 /// provide it, and [`BackendError::Open`] when the backend refuses to open.
@@ -132,6 +136,7 @@ pub fn create(
     kind: BackendKind,
     project: Option<&Project>,
     clock: Arc<dyn Clock>,
+    logger: Arc<dyn Logger>,
     bind_host: &str,
     device_port: u16,
     pace: bool,
@@ -173,7 +178,7 @@ pub fn create(
                 owns_device_listener: false,
             })
         }
-        BackendKind::M300 => open_m300(kind, &options, clock),
+        BackendKind::M300 => open_m300(kind, &options, clock, logger, project),
     }
 }
 
@@ -195,24 +200,57 @@ fn open_options(project: Option<&Project>, bind_host: &str, device_port: u16) ->
     options
 }
 
-/// Open the native SDK backend, or say why this host or build cannot.
+/// Open the native SDK backend: load `m300_sdk.dll`, bind and listen on
+/// `bind_host:device_port`, and wait for the vibrometer to dial in.
 ///
-/// Refusing is deliberately not a fallback to the mock: a UTS that asked for hardware and
-/// silently got a signal generator would record plausible numbers that mean nothing
-/// (`docs/PLAN.md` 15.3).
+/// The sample path is the SDK's own — `m300_device_set_data_callback` fires on an SDK thread and
+/// the backend parks each batch in a bounded queue that `DeviceBackend::stream` drains — so
+/// there is no [`SampleSink`] for a listener to fill, and no listener to fill it
+/// (`docs/M300-NATIVE.md` §6, §7).
+#[cfg(all(windows, feature = "m300"))]
+fn open_m300(
+    kind: BackendKind,
+    options: &DeviceOpenOptions,
+    clock: Arc<dyn Clock>,
+    logger: Arc<dyn Logger>,
+    project: Option<&Project>,
+) -> Result<OpenedBackend, BackendError> {
+    // The resolved bind host and device port travel in `options`; the rest of the device setup
+    // block has no home there, because this is the only backend that can act on it. `lpfHz` is
+    // passed unresolved on purpose: `None` means "pair the filter band with the sample rate",
+    // which is the rule the vendor repeats in every document (`docs/M300-NATIVE.md` §6.1), and
+    // that pairing is the backend's job rather than the project's Nyquist default.
+    let mut backend = quickvib_m300::M300Backend::new(clock)
+        .with_logger(logger)
+        .with_low_pass_hz(project.and_then(|p| p.device.lpf_hz))
+        .with_range(project.map(|p| p.device.active_range()));
+    backend
+        .open(options)
+        .map_err(|source| BackendError::Open { kind, source })?;
+    Ok(OpenedBackend {
+        backend: Box::new(backend),
+        sink: None,
+        owns_device_listener: true,
+    })
+}
+
+/// Refuse `--backend m300` on a host or in a build that cannot provide it.
+///
+/// Deliberately not a fallback to the mock: a UTS that asked for hardware and silently got a
+/// signal generator would record plausible numbers that mean nothing (`docs/PLAN.md` 15.3).
+#[cfg(not(all(windows, feature = "m300")))]
 fn open_m300(
     kind: BackendKind,
     _options: &DeviceOpenOptions,
     _clock: Arc<dyn Clock>,
+    _logger: Arc<dyn Logger>,
+    _project: Option<&Project>,
 ) -> Result<OpenedBackend, BackendError> {
-    let reason = if !cfg!(windows) {
-        "the M300 backend requires a Windows host"
-    } else if !cfg!(feature = "m300") {
+    // Exhaustive: this arm only exists when the host is not Windows or the feature is off.
+    let reason = if cfg!(windows) {
         "this build was compiled without the 'm300' feature"
     } else {
-        // The Windows FFI backend arrives in Phase 6, gated on the SDK questions in
-        // docs/PLAN.md 21.1.
-        "the M300 backend is not implemented in this build"
+        "the M300 backend requires a Windows host"
     };
     Err(BackendError::Unavailable {
         kind,
@@ -247,7 +285,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use quickvib_core::TestClock;
+    use quickvib_core::{NullLogger, TestClock};
 
     const PROJECT: &str = r#"{
         "schemaVersion": 1,
@@ -261,6 +299,10 @@ mod tests {
 
     fn clock() -> Arc<dyn Clock> {
         Arc::new(TestClock::at_epoch())
+    }
+
+    fn logger() -> Arc<dyn Logger> {
+        Arc::new(NullLogger)
     }
 
     #[test]
@@ -292,6 +334,7 @@ mod tests {
             BackendKind::Mock,
             Some(&project),
             clock(),
+            logger(),
             "127.0.0.1",
             9123,
             false,
@@ -306,7 +349,16 @@ mod tests {
 
     #[test]
     fn the_mock_backend_opens_without_a_project() {
-        let opened = create(BackendKind::Mock, None, clock(), "127.0.0.1", 9123, false).unwrap();
+        let opened = create(
+            BackendKind::Mock,
+            None,
+            clock(),
+            logger(),
+            "127.0.0.1",
+            9123,
+            false,
+        )
+        .unwrap();
         assert!(opened.backend.is_connected());
     }
 
@@ -317,6 +369,7 @@ mod tests {
             BackendKind::Tcp,
             Some(&project),
             clock(),
+            logger(),
             "127.0.0.1",
             9123,
             false,
@@ -335,7 +388,16 @@ mod tests {
 
     #[test]
     fn the_tcp_backend_needs_no_project() {
-        let opened = create(BackendKind::Tcp, None, clock(), "127.0.0.1", 9123, false).unwrap();
+        let opened = create(
+            BackendKind::Tcp,
+            None,
+            clock(),
+            logger(),
+            "127.0.0.1",
+            9123,
+            false,
+        )
+        .unwrap();
         assert!(opened.sink.is_some());
         assert_eq!(
             opened.backend.capabilities().unwrap().sample_rate_hz,
@@ -345,7 +407,15 @@ mod tests {
 
     #[test]
     fn selecting_m300_here_is_an_error_not_a_silent_fallback() {
-        let Err(error) = create(BackendKind::M300, None, clock(), "127.0.0.1", 9123, false) else {
+        let Err(error) = create(
+            BackendKind::M300,
+            None,
+            clock(),
+            logger(),
+            "127.0.0.1",
+            9123,
+            false,
+        ) else {
             panic!("the M300 backend must not be constructible here");
         };
         assert!(matches!(error, BackendError::Unavailable { .. }));
@@ -364,7 +434,7 @@ mod tests {
         // The counterpart of the assertion above, on the value the app layer actually reads:
         // both backends that can be opened on this host leave the device port to QuickVib.
         for kind in [BackendKind::Mock, BackendKind::Tcp] {
-            let opened = create(kind, None, clock(), "127.0.0.1", 9123, false).unwrap();
+            let opened = create(kind, None, clock(), logger(), "127.0.0.1", 9123, false).unwrap();
             assert!(!opened.owns_device_listener, "for {kind}");
             assert_eq!(opened.owns_device_listener, owns_device_listener(kind));
         }

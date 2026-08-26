@@ -633,6 +633,14 @@ impl DeviceBackend for M300Backend {
             return Ok(());
         }
 
+        // The application resolves `--bind`/`server.bindHost` into the options, so that is where
+        // the bind address comes from unless an embedder pinned one with
+        // [`M300Backend::with_bind_address`]. Empty means "every interface", which is also what
+        // a null `bind_addr` means to `m300_server_create_ex`.
+        if self.bind_address.is_none() && !options.bind_host.is_empty() {
+            self.bind_address = Some(options.bind_host.clone());
+        }
+
         self.stopped.store(false, Ordering::Release);
         self.live = Some(self.start(options)?);
         Ok(())
@@ -829,5 +837,30 @@ mod tests {
         assert_eq!(backend.bind_display(), "192.168.1.100");
         assert_eq!(backend.timeout_ms, 5_000);
         assert_eq!(backend.queue_samples, 4_096);
+    }
+
+    #[test]
+    fn the_open_options_supply_the_bind_address_unless_one_was_pinned() {
+        // `--bind` reaches the SDK through the options, because on this backend the SDK is the
+        // listener and there is no `DeviceServer` of ours for the flag to configure instead.
+        // The open still fails — there is no DLL on a test machine — but by then the address
+        // has been adopted.
+        let mut options = DeviceOpenOptions::new(1000.0, SampleUnit::VelocityUmPerSec);
+        options.bind_host = "127.0.0.1".to_owned();
+
+        let mut from_options = backend();
+        let _ = from_options.open(&options);
+        assert_eq!(from_options.bind_display(), "127.0.0.1");
+
+        let mut pinned = backend().with_bind_address(Some("10.0.0.4".to_owned()));
+        let _ = pinned.open(&options);
+        assert_eq!(pinned.bind_display(), "10.0.0.4");
+
+        // An empty host is "every interface", which is a null `bind_addr` rather than a bind to
+        // the literal empty string.
+        options.bind_host = String::new();
+        let mut wildcard = backend();
+        let _ = wildcard.open(&options);
+        assert!(wildcard.bind_address.is_none());
     }
 }
