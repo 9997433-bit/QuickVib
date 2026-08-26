@@ -1,0 +1,16 @@
+[package]
+name = "quickvib-device"
+description = "DeviceBackend trait, deterministic mock backend, LE f32 framer and inbound device listener."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+quickvib-core.workspace = true

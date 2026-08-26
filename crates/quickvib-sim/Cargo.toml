@@ -1,0 +1,30 @@
+[package]
+name = "quickvib-sim"
+description = "m300-sim: an inbound M300 stand-in that dials QuickVib's device port and streams LE f32 samples."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "m300-sim"
+path = "src/main.rs"
+
+[lib]
+name = "quickvib_sim"
+path = "src/lib.rs"
+
+[dependencies]
+quickvib-core.workspace = true
+
+[dev-dependencies]
+quickvib.workspace = true
+quickvib-device.workspace = true
+quickvib-testkit.workspace = true
+tempfile.workspace = true

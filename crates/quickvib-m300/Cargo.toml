@@ -1,0 +1,31 @@
+[package]
+name = "quickvib-m300"
+description = "Windows-only M300 SDK v1.2.0 interop for QuickVib. Scaffolding only: no SDK calls yet."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Developer-bench only: regenerate the FFI declaration snapshot from the vendor header.
+# Needs `libclang` and `m300.h`, neither of which exists in CI, so it is never enabled there
+# (docs/PLAN.md 11, docs/M300-NATIVE.md 4).
+bindgen = ["dep:bindgen"]
+
+# The SDK is opened at runtime with `LoadLibraryW`/`GetProcAddress` through `libloading`, so the
+# shipped `quickvib.exe` has no import-library link dependency on the vendor DLL and starts fine
+# on a bench without it (docs/PLAN.md 6.3, 11).
+[target.'cfg(windows)'.dependencies]
+libloading = { workspace = true }
+
+# Not in `[workspace.dependencies]`: this is the only crate that will ever use it, and it is a
+# bench tool rather than part of the product. Upper bound keeps the graph inside the pinned MSRV.
+[build-dependencies]
+bindgen = { version = ">=0.70, <0.71", optional = true }

@@ -1,0 +1,19 @@
+[package]
+name = "quickvib-measure"
+description = "Peak/RMS/peak-to-peak statistics and CSV/TXT export for a QuickVib capture."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+quickvib-core.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

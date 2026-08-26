@@ -1,0 +1,7 @@
+check	status	exit_code
+fmt-all	PASS	0
+test-workspace	PASS	0
+test-workspace-gui	PASS	0
+clippy-workspace	PASS	0
+clippy-workspace-gui	PASS	0
+check-deps	PASS	0

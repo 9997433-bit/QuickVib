@@ -1,0 +1,39 @@
+[package]
+name = "quickvib-ui"
+description = "QuickVib desktop front end: the project form view-model and the egui window."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# The window itself. Off by default so a plain `cargo build`, `cargo test` or
+# `cargo clippy` — and the Windows cross-build — never compile the graphics stack
+# (`docs/PLAN.md` 6.3). The view-model in `form` and `controller` is always built and
+# always tested, with no display and no windowing dependency.
+gui = ["dep:eframe"]
+
+[dependencies]
+quickvib-core.workspace = true
+quickvib-device.workspace = true
+quickvib-engine.workspace = true
+quickvib-measure.workspace = true
+quickvib-project.workspace = true
+
+# Pinned to a version whose whole tree still compiles on the MSRV in rust-toolchain.toml.
+eframe = { version = ">=0.30, <0.31", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+], optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
