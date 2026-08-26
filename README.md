@@ -22,7 +22,9 @@ The default device backend is a pure-Rust **mock**, so the whole product builds,
 tested on Linux as well as Windows, with no hardware and no vendor SDK. For rehearsing the *real*
 inbound device link without an M300, `--backend tcp` records from whatever dials into the device
 port, and the bundled **`m300-sim`** executable is a stand-in that dials in and streams — see
-[§9.1](#91-m300-sim--simulating-the-inbound-device-link).
+[§9.1](#91-m300-sim--simulating-the-inbound-device-link). A second stand-in, **`m300-device-sim`**,
+speaks the vendor's framed **SCZN** protocol to the SDK's own listener, which is the only way to
+rehearse `--backend m300` — see [§9.2](#92-m300-device-sim--simulating-the-sczn-device).
 
 > **Status.** This is an in-progress build of the plan in [`docs/PLAN.md`](docs/PLAN.md). The mock
 > backend and the socket-fed `tcp` backend are complete and exercised by CI on every commit. The
@@ -563,6 +565,22 @@ listener of ours to be counted; the sample count to trust there is `TRAC:POIN?`.
 `device.allowedPeers` is not enforced on this path either: it is applied by QuickVib's listener, and
 the SDK has no equivalent, so restrict the link with a firewall rule instead.
 
+#### Three ways to run without an instrument
+
+Each backend has a different notion of "device", so each needs a different stand-in — or none:
+
+| Backend | Stand-in | Wire | Needs | What it proves |
+| --- | --- | --- | --- | --- |
+| `--backend mock` | *(none)* | samples never leave the process | nothing | Record → measure → export, and every SCPI path above the transport |
+| `--backend tcp` | `m300-sim` ([§9.1](#91-m300-sim--simulating-the-inbound-device-link)) | bare little-endian `f32`, no framing | nothing | The same, plus QuickVib's own listener and framer |
+| `--backend m300` | `m300-device-sim` ([§9.2](#92-m300-device-sim--simulating-the-sczn-device)) | SCZN frames | Windows, `--features m300`, the vendor `m300_sdk.dll` | The same, plus the real SDK parsing a real protocol |
+
+**The two simulators are not interchangeable**, and pointing one at the other's backend gives a
+link that connects and then does nothing useful. `m300-sim` pushes bare samples because that is
+what `--backend tcp` reads; `m300-device-sim` speaks the vendor's framed protocol because that is
+what the SDK's listener reads. Neither is a fake DLL — both are socket clients, and on the
+`m300` path the SDK doing the parsing is the vendor's real one.
+
 ### 9.1 `m300-sim` — simulating the inbound device link
 
 The mock is convenient but it short-circuits the transport: it hands samples straight to the engine,
@@ -619,6 +637,71 @@ Things worth knowing:
   imitate the vendor SDK, and the QuickVib code it exercises is the code a real vibrometer
   exercises.
 
+### 9.2 `m300-device-sim` — simulating the SCZN device
+
+`--backend m300` is the one path `m300-sim` cannot reach. The SDK owns the listening socket, and
+what it expects to hear is not bare samples but **SCZN**: a framed request/response protocol in
+which the host sends `0x00` to start a capture and the device answers, then uploads `0x04` sample
+blocks until it is told to stop. `m300-device-sim` is a device that speaks it.
+[`docs/SCZN-PROTOCOL.md`](docs/SCZN-PROTOCOL.md) is the protocol; this is how to run it.
+
+It needs a Windows host with the vendor DLL, because the thing on the other end of the socket is
+the real SDK:
+
+```bat
+:: terminal 1 — the instrument, with the SDK binding the device port
+quickvib.exe --headless --backend m300 --device-port 9123 --project samples\Test.proj
+
+:: terminal 2 — the "M300"
+m300-device-sim.exe --host 127.0.0.1 --port 9123 --rate 100000 --amplitude 250 --frequency 120
+```
+
+The simulator itself is platform-neutral and builds and runs anywhere; without the SDK there is
+simply nothing for it to talk to except the test suite's own host stand-in.
+
+| `m300-device-sim` argument | Value | Default | Behavior |
+| --- | --- | --- | --- |
+| `--host <host>` | host or IP | `127.0.0.1` | Where the SDK's listener is |
+| `--port <n>` | 1–65535 | `9123` | The port it bound |
+| `--rate <hz>` | > 0 | `100000` | Samples per second, paced against real time |
+| `--amplitude <a>` | finite | `250` | Peak amplitude, in the unit the data type implies |
+| `--frequency <hz>` | ≥ 0 | `120` | Tone frequency; `0` sends a flat line |
+| `--data-type <kind>` | `velocity`, `displacement`, `acceleration`, `iq` | `velocity` | What the device reports uploading |
+| `--sn <serial>` | ≤ 10 ASCII | `SIM-000001` | Serial in the hardware-information blob, which `*IDN?` reports |
+| `--block <n>` | 1–262144 | `4096` | Samples per `0x04` upload |
+| `--crc <mode>` | `standard`, `castagnoli`, `zero` | `standard` | Which checksum to send — see below |
+| `--prefix-endian <e>` | `big`, `little` | `big` | Byte order of the upload payload's two prefix words |
+| `--retry <s>` | > 0 | `1` | Seconds between dial attempts |
+| `--once` | flag | *(redial forever)* | Exit when the link drops |
+| `--duration <s>` | > 0 | *(until interrupted)* | Stop the whole run after this long |
+| `--version` / `--help` | flag | — | Print and exit `0` |
+
+Exit codes: `0` the run ended after at least one session, `2` bad arguments, `3` it ended without
+ever connecting.
+
+Things worth knowing:
+
+* **Samples wait for `0x00`.** Unlike `m300-sim`, which streams the moment it connects, this one
+  is idle until the host starts it and stops dead when the host says `0x02` — because that is
+  what the protocol says, and it is what makes `INIT` on the QuickVib side mean something on the
+  wire.
+* **Rate and filter are enum indices, not hertz.** `--rate 100000` becomes rung `0x05` plus the
+  matching 100 kHz low-pass band, since the vendor insists the two be set together. A rate off
+  the ladder is reported as the nearest rung while pacing stays at what was asked for, which is a
+  deliberate way to reproduce a device/project mismatch.
+* **`--crc` exists because the vendor specification contradicts itself.** It prints a C table for
+  standard CRC-32 and a Python example that can only have produced CRC-32C. The device sends the
+  former by default and accepts all three variants (including the zero the specification
+  explicitly permits) on the way in; if the SDK ever answers `-4 ERR_CRC_MISMATCH`, try the other
+  two. [`docs/SCZN-PROTOCOL.md`](docs/SCZN-PROTOCOL.md) §7 has the detail.
+* **Firmware upgrade is refused, not ignored.** `0xF8`–`0xFF` get a failure reply in the
+  documented shape, so the host's error handling runs and the link stays usable. There is no
+  firmware here to replace.
+* **It redials on its own**, as a real device does, and comes back **idle** — an acquisition does
+  not survive the link that started it.
+* **Still no fake DLL.** The parsing on the far side is the vendor's real SDK; this end is a TCP
+  client writing bytes the vendor documented.
+
 ## 10. Export formats
 
 `FORM CSV|TXT` selects the format; `MMEM:STOR:TRAC "<path>"` writes the last completed capture.
@@ -671,7 +754,7 @@ device is configured for and labels them accordingly.
 ## 12. Building and testing
 
 ```bash
-cargo build --release              # release binaries: quickvib and m300-sim
+cargo build --release              # release binaries: quickvib, m300-sim, m300-device-sim
 cargo build --release --features gui   # the same, with the desktop window
 cargo test                         # full test suite; runs on Linux, no hardware needed
 cargo clippy --all-targets -- -D warnings
@@ -698,6 +781,14 @@ mock and `tcp` paths includes the inbound device link end to end —
 `crates/quickvib/tests/tcp_backend.rs` records, measures and exports over loopback, and
 `crates/quickvib-sim/tests/pair.rs` spawns the built `m300-sim` binary against an in-process
 instrument, so the pair documented in §9.1 is what CI actually runs.
+
+The SCZN protocol is covered the same way, from the other end. The host on that link is the
+vendor DLL, which CI cannot run, so `crates/quickvib-sczn/tests/sdk_side.rs` is the smallest
+thing that behaves like it on the wire: it binds a port, accepts the device that dials in, and
+drives the whole command set — start, stop, parameter write and read-back, status, DC removal, a
+refused firmware upgrade, and a reconnect. What no test can prove is that `m300_sdk.dll` agrees
+with our reading of the specification where the specification is silent; those points are marked
+**bench** in [`docs/SCZN-PROTOCOL.md`](docs/SCZN-PROTOCOL.md).
 
 **Windows executable, route A — native MSVC build (the shipped artifact):**
 
@@ -736,7 +827,8 @@ is what ships.
 | `quickvib-scpi` | Lexer, command tree, parsed commands, response formatting |
 | `quickvib-engine` | State machine, error queue, OPC, recording pipeline, dispatch |
 | `quickvib-ui` | Desktop front end: the display-free view model, the Chinese/English label table and the language and theme preferences always, the egui window, its two palettes and the embedded CJK font behind `--features gui` |
-| `quickvib-sim` | The `m300-sim` executable: an inbound M300 stand-in (§9.1) |
+| `quickvib-sim` | The `m300-sim` executable: an inbound M300 stand-in for `--backend tcp` (§9.1) |
+| `quickvib-sczn` | The SCZN protocol and the `m300-device-sim` executable: an M300 stand-in for `--backend m300` (§9.2) |
 | `quickvib-testkit` | Dev-only shared test fixtures; ships nothing |
 | `quickvib-m300` | **Windows-only**, out of `default-members`, the only crate containing `unsafe` |
 
@@ -756,6 +848,8 @@ is what ships.
 | A `--backend m300` run fails at startup with `-7 ERR_NETWORK` | Something else already holds `--device-port`, so the SDK could not bind it. The usual culprits are a second QuickVib instance and a leftover `--backend tcp` run; QuickVib itself does not bind that port on the `m300` path ([§9](#9-mock-backend-vs-real-device)) |
 | The window shows a dash for the device port on a `--backend m300` run | Correct, and it means what it says: "实际监听端口 / Live listening ports" lists the sockets QuickVib bound, and on this backend the device port is the SDK's. The number in play is the `项目端口 / Project port` field, and the startup banner names it too |
 | `m300-sim` exits `3` | Nothing is listening on `--port`. Start QuickVib first, and check that its `--device-port` is the port the simulator is dialing |
+| A simulator connects but no samples ever arrive | Most likely the wrong one for the backend. `--backend tcp` needs `m300-sim` (bare `f32`); `--backend m300` needs `m300-device-sim` (SCZN). Either will connect to either, and then nothing useful happens ([§9](#three-ways-to-run-without-an-instrument)) |
+| `m300-device-sim` connects but stays silent | Correct until the host sends `0x00`. It streams from `INIT` onwards, not from connect — that is the protocol. If `INIT` has run and blocks still are not arriving, check the log for `-4 ERR_CRC_MISMATCH` and try `--crc castagnoli` or `--crc zero` ([§9.2](#92-m300-device-sim--simulating-the-sczn-device)) |
 | A `--backend tcp` run trips the watchdog | The simulator's `--rate` is below the project's `device.sampleRateHz`, so the expected sample count never arrives in time. Match the two, or raise `recording.timeoutMultiplier` |
 | `-241,"Hardware missing"` at `INIT` | Either no device is connected, or the SDK DLL could not be loaded. The log lists every path probed and the OS error for each. Confirm the DLL location per §9 |
 | `-240,"Hardware error"` mid-run | The device link dropped during `ARMED` or `RECORDING`. The run moves to `ABORTED`; re-arm with `INIT` |
@@ -822,7 +916,9 @@ UTS（单元测试系统）调用。它是一个自包含的 Windows 可执行�
 默认设备后端是纯 Rust 实现的**模拟（mock）后端**，因此整个产品在 Linux 和 Windows 上都可以编译、运行
 并完整测试，无需真实硬件，也无需厂商 SDK。若要在没有 M300 的情况下演练**真实的设备入站链路**，可以用
 `--backend tcp`：它会记录任何连入设备端口的数据流；仓库同时提供 **`m300-sim`** 可执行程序作为主动连入
-并推送数据的替身——参见 [§9.1](#91-m300-sim模拟设备入站链路)。
+并推送数据的替身——参见 [§9.1](#91-m300-sim模拟设备入站链路)。另有一个替身 **`m300-device-sim`**，它对
+SDK 自己的监听器讲厂商的分帧协议 **SCZN**，这是演练 `--backend m300` 的唯一途径——参见
+[§9.2](#92-m300-device-sim模拟-sczn-设备)。
 
 > **当前状态。** 本仓库正在按 [`docs/PLAN.md`](docs/PLAN.md) 的计划实现。模拟后端与套接字驱动的
 > `tcp` 后端均已完成，每次提交都由 CI 覆盖。M300 原生后端（`crates/quickvib-m300`）**代码已经写完，
@@ -1314,6 +1410,21 @@ QuickVib 不再另开监听。链路方向没变（仍由 M300 主动拨入）�
 `device.allowedPeers` 在这条路径上也不生效：它由 QuickVib 的监听器实施，而 SDK 没有对应能力，请改用
 防火墙规则限制来源。
 
+#### 无仪器运行的三条路径
+
+三个后端对「设备」的定义各不相同，因此各自需要不同的替身——或者根本不需要：
+
+| 后端 | 替身 | 线上格式 | 前置条件 | 能验证什么 |
+| --- | --- | --- | --- | --- |
+| `--backend mock` | *(无)* | 采样不出进程 | 无 | 采集 → 测量 → 导出，以及传输层之上的全部 SCPI 路径 |
+| `--backend tcp` | `m300-sim`（[§9.1](#91-m300-sim模拟设备入站链路)） | 裸小端 `f32`，无任何分帧 | 无 | 同上，另加 QuickVib 自己的监听器与 framer |
+| `--backend m300` | `m300-device-sim`（[§9.2](#92-m300-device-sim模拟-sczn-设备)） | SCZN 帧 | Windows、`--features m300`、厂商 `m300_sdk.dll` | 同上，另加真实 SDK 解析真实协议 |
+
+**两个模拟器不可互换**：把其中一个接到另一个的后端上，链路能连上，然后什么有用的事都不会发生。
+`m300-sim` 推送裸采样，因为那正是 `--backend tcp` 所读取的；`m300-device-sim` 讲厂商的分帧协议，因为
+那正是 SDK 监听器所读取的。两者都不是假 DLL——它们都只是 socket 客户端，而在 `m300` 路径上负责解析的
+是厂商真实的 SDK。
+
 ### 9.1 `m300-sim`：模拟设备入站链路
 
 模拟后端很方便，但它绕过了传输层：采样直接交给仪器引擎，socket 路径上的代码一行都没跑到。
@@ -1364,6 +1475,63 @@ m300-sim.exe --host 127.0.0.1 --port 9123 --rate 100000 --amplitude 250 --freque
 * **依然没有假 DLL。** `m300-sim` 只是一个 socket 客户端——它不桩实现、不包装、也不模仿厂商 SDK；它
   驱动到的 QuickVib 代码，与真实测振仪驱动到的完全相同。
 
+### 9.2 `m300-device-sim`：模拟 SCZN 设备
+
+`--backend m300` 是 `m300-sim` 唯一够不到的一条路径。这条路径上 socket 归 SDK 所有，而它期待收到的
+不是裸采样，而是 **SCZN**：一套分帧的请求 / 应答协议——上位机发 `0x00` 开始采集、下位机应答，随后不断
+上传 `0x04` 采样块，直到被要求停止。`m300-device-sim` 就是一台会讲这套协议的设备。协议本身见
+[`docs/SCZN-PROTOCOL.md`](docs/SCZN-PROTOCOL.md)，这里只讲怎么跑。
+
+它需要一台装有厂商 DLL 的 Windows 主机，因为 socket 另一端就是真实的 SDK：
+
+```bat
+:: 终端 1 —— 仪器，设备端口由 SDK bind
+quickvib.exe --headless --backend m300 --device-port 9123 --project samples\Test.proj
+
+:: 终端 2 —— 「M300」
+m300-device-sim.exe --host 127.0.0.1 --port 9123 --rate 100000 --amplitude 250 --frequency 120
+```
+
+模拟器本身与平台无关，在哪儿都能编译和运行；只是没有 SDK 时，除了测试套件里自带的上位机替身之外，它
+没有可以对话的对象。
+
+| `m300-device-sim` 参数 | 取值 | 默认值 | 行为 |
+| --- | --- | --- | --- |
+| `--host <host>` | 主机名或 IP | `127.0.0.1` | SDK 监听器所在地址 |
+| `--port <n>` | 1–65535 | `9123` | SDK bind 的端口 |
+| `--rate <hz>` | > 0 | `100000` | 每秒采样点数，按真实时间节流 |
+| `--amplitude <a>` | 有限数 | `250` | 峰值幅度，单位由数据类型决定 |
+| `--frequency <hz>` | ≥ 0 | `120` | 正弦频率；`0` 表示发送恒定的平直信号 |
+| `--data-type <kind>` | `velocity`、`displacement`、`acceleration`、`iq` | `velocity` | 设备声称上传的物理量 |
+| `--sn <serial>` | ≤ 10 个 ASCII 字符 | `SIM-000001` | 硬件信息中的序列号，`*IDN?` 会报告它 |
+| `--block <n>` | 1–262144 | `4096` | 每个 `0x04` 上传包的采样点数 |
+| `--crc <mode>` | `standard`、`castagnoli`、`zero` | `standard` | 发送哪种校验值——见下 |
+| `--prefix-endian <e>` | `big`、`little` | `big` | 上传负载中两个前缀字的字节序 |
+| `--retry <s>` | > 0 | `1` | 两次拨号之间的间隔秒数 |
+| `--once` | 开关 | *(无限重连)* | 链路断开即退出 |
+| `--duration <s>` | > 0 | *(直到被中断)* | 整轮运行达到该时长后停止 |
+| `--version` / `--help` | 开关 | — | 打印并以 `0` 退出 |
+
+退出码：`0` 至少建立过一次会话，`2` 参数错误，`3` 整轮运行结束时一次都没连上。
+
+几点需要知道的：
+
+* **采样要等 `0x00`。** 与连上就开始推送的 `m300-sim` 不同，这个模拟器在上位机下达开始命令之前一直
+  空闲，收到 `0x02` 立即停止——因为协议就是这么规定的，也正因如此，QuickVib 那侧的 `INIT` 才在线上
+  真的对应一件事。
+* **采样率和滤波器是档位号，不是赫兹。** `--rate 100000` 会变成第 `0x05` 档，外加与之匹配的 100 kHz
+  低通档位——厂商坚持这两者必须成对设置。若请求的采样率不在档位表上，上报的是最接近的一档，而节流仍按
+  请求值执行；这正好可以刻意复现「设备与工程不一致」的场景。
+* **`--crc` 的存在是因为厂商规范自相矛盾。** 它既给出了标准 CRC-32 的 C 表，又给出了一段只可能由
+  CRC-32C 算出结果的 Python 示例。设备默认发送前者，收包时三种（含规范明确允许的全零）一律接受；如果
+  SDK 报 `-4 ERR_CRC_MISMATCH`，就换另外两种试试。详见
+  [`docs/SCZN-PROTOCOL.md`](docs/SCZN-PROTOCOL.md) §7。
+* **固件升级是「拒绝」，不是「无视」。** `0xF8`–`0xFF` 会按文档规定的应答格式返回失败，这样上位机自己
+  的错误处理会真的跑一遍，链路也保持可用。这里没有固件可供替换。
+* **它会自己重新拨号**（真实设备也是如此），并且回来时处于**空闲**状态——一次采集不会在启动它的那条
+  链路之外幸存。
+* **依然没有假 DLL。** 另一端负责解析的是厂商真实的 SDK；这一端只是一个按厂商文档写字节的 TCP 客户端。
+
 ## 10. 导出格式
 
 `FORM CSV|TXT` 选择格式，`MMEM:STOR:TRAC "<path>"` 写出最近一次完成的采集。相对路径基于
@@ -1412,7 +1580,7 @@ index,time_s,value
 ## 12. 编译与测试
 
 ```bash
-cargo build --release              # 发布版可执行文件：quickvib 与 m300-sim
+cargo build --release              # 发布版可执行文件：quickvib、m300-sim 与 m300-device-sim
 cargo build --release --features gui   # 同上，并带桌面窗口
 cargo test                         # 完整测试套件；可在 Linux 上运行，无需硬件
 cargo clippy --all-targets -- -D warnings
@@ -1434,6 +1602,12 @@ GUI 默认关闭，测试套件也不需要打开它：窗口的视图模型—�
 两条路径的覆盖包含端到端的设备入站链路：`crates/quickvib/tests/tcp_backend.rs` 在环回地址上完成录制、测量与
 导出，`crates/quickvib-sim/tests/pair.rs` 则直接启动编译好的 `m300-sim` 可执行文件，让它连入进程内的
 仪器——也就是说 §9.1 中记录的这一对进程正是 CI 实际运行的对象。
+
+SCZN 协议以同样的方式、从另一头得到覆盖。这条链路上的上位机是厂商 DLL，CI 跑不了它，因此
+`crates/quickvib-sczn/tests/sdk_side.rs` 就是在线上表现得像那个监听器的最小实现：bind 一个端口、接受
+拨入的设备，然后把整套命令跑一遍——开始、停止、写参数与回读、设备状态、去直流、被拒绝的固件升级，以及
+一次重连。测试无法证明的只有一件事：在规范本身没有明说的地方，`m300_sdk.dll` 是否与我们的解读一致；
+这些点在 [`docs/SCZN-PROTOCOL.md`](docs/SCZN-PROTOCOL.md) 中均标注为 **bench**。
 
 **生成 Windows 可执行文件，方式 A —— Windows 原生 MSVC 构建（实际交付的产物）：**
 
@@ -1470,7 +1644,8 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 | `quickvib-scpi` | 词法分析、命令树、命令解析结果、响应格式化 |
 | `quickvib-engine` | 状态机、错误队列、OPC、录制流水线、命令分发 |
 | `quickvib-ui` | 桌面前端：不依赖窗口库的视图模型、中英文文案表与语言/主题偏好始终编译，egui 窗口、两套配色与内嵌 CJK 字体位于 `--features gui` 之后 |
-| `quickvib-sim` | `m300-sim` 可执行程序：模拟 M300 主动连入的替身（§9.1） |
+| `quickvib-sim` | `m300-sim` 可执行程序：面向 `--backend tcp` 的 M300 入站替身（§9.1） |
+| `quickvib-sczn` | SCZN 协议与 `m300-device-sim` 可执行程序：面向 `--backend m300` 的 M300 替身（§9.2） |
 | `quickvib-testkit` | 仅供测试使用的共享夹具，不参与发布 |
 | `quickvib-m300` | **仅 Windows**，不在 `default-members` 中，是唯一包含 `unsafe` 的 crate |
 
@@ -1490,6 +1665,8 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 | `--backend m300` 启动时报 `-7 ERR_NETWORK` | `--device-port` 已被其他进程占用，SDK 无法 bind。常见原因是又起了一个 QuickVib 实例，或残留着一个 `--backend tcp` 进程；在 `m300` 路径上 QuickVib 自己并不会去 bind 这个端口（[§9](#9-模拟后端与真实设备)） |
 | `--backend m300` 下窗口里的设备端口显示为短横线 | 这是正确的，含义也就是字面意思：「实际监听端口」列出的是 QuickVib 自己绑定的 socket，而在该后端上设备端口属于 SDK。真正生效的端口号是「项目端口」字段中的值，启动横幅里也会打印它 |
 | `m300-sim` 退出码 `3` | `--port` 上没有任何进程在监听。请先启动 QuickVib，并确认其 `--device-port` 与模拟器拨入的端口一致 |
+| 模拟器连上了，但一个采样都收不到 | 多半是给后端配错了模拟器。`--backend tcp` 要配 `m300-sim`（裸 `f32`），`--backend m300` 要配 `m300-device-sim`（SCZN）。两者都能连上对方的后端，然后什么都不会发生（[§9](#无仪器运行的三条路径)） |
+| `m300-device-sim` 连上后一直不出声 | 在上位机发出 `0x00` 之前这是正常的：它从 `INIT` 之后才开始推送，而不是一连上就推——协议如此。若 `INIT` 已执行仍收不到数据块，检查日志里有无 `-4 ERR_CRC_MISMATCH`，并改用 `--crc castagnoli` 或 `--crc zero`（[§9.2](#92-m300-device-sim模拟-sczn-设备)） |
 | `--backend tcp` 采集触发看门狗 | 模拟器的 `--rate` 低于工程的 `device.sampleRateHz`，预期点数无法及时收满。让两者一致，或调大 `recording.timeoutMultiplier` |
 | `INIT` 时返回 `-241,"Hardware missing"` | 要么没有设备连入，要么 SDK 动态库加载失败。日志会列出所有尝试过的路径及各自的系统错误。按第 9 节确认 DLL 位置 |
 | 运行中出现 `-240,"Hardware error"` | 在 `ARMED` 或 `RECORDING` 期间设备链路断开。状态转为 `ABORTED`，可用 `INIT` 重新开始 |
