@@ -754,6 +754,7 @@ is what ships.
 | Exit code `4` | `--project` was given but the file is missing or fails schema validation. The log line carries the JSON line and column |
 | `SYST:DEV:CONN?` returns `0` | The M300 has not dialed in. Check that it is powered, on the same network, configured to connect to this host on `9123`, that no firewall blocks the inbound connection, and that `device.allowedPeers` (if set) includes its address. With `--backend mock` this is always `1`, because the mock needs no link. With `--backend m300` the answer is the SDK's own `m300_device_is_connected`, so a `0` there means the SDK has accepted no device — the peer allow-list is not involved |
 | A `--backend m300` run fails at startup with `-7 ERR_NETWORK` | Something else already holds `--device-port`, so the SDK could not bind it. The usual culprits are a second QuickVib instance and a leftover `--backend tcp` run; QuickVib itself does not bind that port on the `m300` path ([§9](#9-mock-backend-vs-real-device)) |
+| The window shows a dash for the device port on a `--backend m300` run | Correct, and it means what it says: "实际监听端口 / Live listening ports" lists the sockets QuickVib bound, and on this backend the device port is the SDK's. The number in play is the `项目端口 / Project port` field, and the startup banner names it too |
 | `m300-sim` exits `3` | Nothing is listening on `--port`. Start QuickVib first, and check that its `--device-port` is the port the simulator is dialing |
 | A `--backend tcp` run trips the watchdog | The simulator's `--rate` is below the project's `device.sampleRateHz`, so the expected sample count never arrives in time. Match the two, or raise `recording.timeoutMultiplier` |
 | `-241,"Hardware missing"` at `INIT` | Either no device is connected, or the SDK DLL could not be loaded. The log lists every path probed and the OS error for each. Confirm the DLL location per §9 |
@@ -1487,6 +1488,7 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 | 退出码 `4` | 指定了 `--project` 但文件不存在或 schema 校验失败。日志中包含出错的 JSON 行号与列号 |
 | `SYST:DEV:CONN?` 返回 `0` | M300 尚未连入。检查设备是否上电、是否与主机同网段、是否配置为连接本机 `9123`、防火墙是否拦截入站连接，以及 `device.allowedPeers`（若配置）是否包含其地址。`--backend mock` 下该查询恒为 `1`，因为模拟后端不需要链路。`--backend m300` 下该查询直接反映 SDK 的 `m300_device_is_connected`，因此返回 `0` 表示 SDK 尚未接受任何设备，与来源白名单无关 |
 | `--backend m300` 启动时报 `-7 ERR_NETWORK` | `--device-port` 已被其他进程占用，SDK 无法 bind。常见原因是又起了一个 QuickVib 实例，或残留着一个 `--backend tcp` 进程；在 `m300` 路径上 QuickVib 自己并不会去 bind 这个端口（[§9](#9-模拟后端与真实设备)） |
+| `--backend m300` 下窗口里的设备端口显示为短横线 | 这是正确的，含义也就是字面意思：「实际监听端口」列出的是 QuickVib 自己绑定的 socket，而在该后端上设备端口属于 SDK。真正生效的端口号是「项目端口」字段中的值，启动横幅里也会打印它 |
 | `m300-sim` 退出码 `3` | `--port` 上没有任何进程在监听。请先启动 QuickVib，并确认其 `--device-port` 与模拟器拨入的端口一致 |
 | `--backend tcp` 采集触发看门狗 | 模拟器的 `--rate` 低于工程的 `device.sampleRateHz`，预期点数无法及时收满。让两者一致，或调大 `recording.timeoutMultiplier` |
 | `INIT` 时返回 `-241,"Hardware missing"` | 要么没有设备连入，要么 SDK 动态库加载失败。日志会列出所有尝试过的路径及各自的系统错误。按第 9 节确认 DLL 位置 |
