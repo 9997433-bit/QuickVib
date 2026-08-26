@@ -154,11 +154,11 @@ undecided; the genuinely unanswerable items are isolated in §21.1 and only gate
 | D18 | **Runtime dependencies: `serde` + `serde_json` only** (plus `libloading`, Windows-target-only, for the M300 crate, and `eframe`, `quickvib-ui`-only behind the non-default `gui` feature). No async runtime, no CLI crate, no logging crate, no date crate, no error-derive crate. Dev-dependencies: `tempfile` only | Default | §6.3 justifies each inclusion and each exclusion. A UTS-launched exe benefits from a dependency graph a reviewer can read in full. See Q10 and Q13 |
 | D19 | **Blocking `std::net` + OS threads; no `tokio`, no `async`** | Decided | §6.4. The concurrency is ~6 long-lived threads, not 10 000 connections; blocking sockets with read timeouts express every requirement here, and cancellation is `AtomicBool` + `TcpStream::shutdown` rather than a runtime-specific cancellation model |
 | D20 | Time is injected through a `Clock` trait (Rust has no `TimeProvider`); `Instant::now`/`SystemTime::now` are banned outside `quickvib-core::clock`, enforced by `clippy.toml` `disallowed-methods` | Decided | A "5-second" capture must run in milliseconds under test; the lint makes the rule mechanical instead of cultural |
-| D21 | No fake `M300Sdk.dll`; the ABI is captured in `docs/M300-NATIVE.md`, declarations are cross-checked against `bindgen` output on a machine that has the SDK, and correctness is verified by a manual Windows smoke checklist | Decided | From the brief |
+| D21 | No fake `m300_sdk.dll`; the ABI is captured in `docs/M300-NATIVE.md`, declarations are cross-checked against `bindgen` output on a machine that has the SDK, and correctness is verified by a manual Windows smoke checklist | Decided | From the brief |
 | D22 | `#![forbid(unsafe_code)]` in every crate **except** `quickvib-m300`, which is `#![deny(unsafe_op_in_unsafe_fn)]` and carries a `SAFETY:` comment per `unsafe` block | Decided | Rust's FFI has no marshalling safety net — a wrong signature is UB, not an exception. Confining `unsafe` to one small crate is the whole mitigation (§20) |
 | D23 | Lints: `#![deny(warnings)]` in CI via `RUSTFLAGS=-Dwarnings`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, all from Phase 0 | Decided | Cheap at the start, expensive to retrofit — the direct analogue of the old `TreatWarningsAsErrors` |
 | D24 | Errors: hand-written `enum` error types per crate implementing `std::error::Error` + `Display`; no `thiserror`/`anyhow`. The binary uses a single top-level `AppError` mapped to exit codes | Default | Fewer than a dozen error enums total; the derive macro's cost is a proc-macro dependency in the build graph for boilerplate we write once. See Q13 |
-| D25 | Shipped artifact is `x86_64-pc-windows-msvc` built on a Windows runner with `-C target-feature=+crt-static`; `x86_64-pc-windows-gnu` cross-built from Linux is a developer/CI convenience target, gated but not shipped | Default | §18.2. The MSVC target matches whatever the SDK vendor built against and removes the VC++ redistributable from the deployment checklist. See Q12 and Q-C (SDK bitness) |
+| D25 | Shipped artifact is `x86_64-pc-windows-msvc` built on a Windows runner with `-C target-feature=+crt-static`; `x86_64-pc-windows-gnu` cross-built from Linux is a developer/CI convenience target, gated but not shipped | Default | §18.2. The MSVC target matches what the SDK vendor built against (Q-C: MSVC, linker 14.41), and `+crt-static` keeps `quickvib.exe` itself free of the VC++ redistributable. The vendor's `m300_sdk.dll` still imports `VCRUNTIME140`, so an M300 bench needs the redistributable anyway — the shipped exe just does not add that requirement of its own. See Q12 |
 | D26 | `Cargo.lock` **is committed** (this workspace produces a binary, not a library) and CI builds with `--locked` | Decided | Reproducible UTS deployments; a surprise `serde_json` patch bump should never appear between a smoke test and a shipped exe |
 | D27 | Panic strategy stays `unwind`; every long-lived thread body is wrapped so a panic kills one SCPI session, not the process | Decided | `panic = "abort"` would let one malformed command take down an instrument the UTS depends on. See §7.10 |
 | D28 | **The window's default language is Simplified Chinese**, English behind a title-bar switch, from one exhaustively tested label table; the preference lives in `ui-language.txt` in the state directory and a fresh machine always starts Chinese. Errors carry a structured `Issue` and localise at display time, never a pre-rendered sentence | Decided | The operators are Chinese-speaking technicians; an English-first panel with a translation bolted on gets read wrong under time pressure. §19 Phase 8 |
@@ -910,12 +910,14 @@ Design notes, and how the shape changed from the .NET sketch:
 ## 11. M300 native contract (outline for `docs/M300-NATIVE.md`)
 
 This document is the review artifact standing in for the part that cannot be tested in CI. It is
-written in Phase 6 against the real SDK v1.2.0 header, but its outline is fixed now.
+written against the real SDK v1.2.0 headers, which are now in hand; the outline below is what it
+follows.
 
 **Binding strategy — `bindgen` for truth, `libloading` for loading, no fake DLL:**
 
 * **`bindgen` (build-dependency, non-default `bindgen` feature).** On a machine that has the SDK
-  header, `build.rs` runs `bindgen` over `m300.h` and emits type and signature definitions into
+  headers, `build.rs` runs `bindgen` over `m300.h` (plus `m300_macros.h`) and emits type and
+  signature definitions into
   `OUT_DIR`. Its output is **committed as a reviewed snapshot** in `src/ffi_generated.rs` so the
   normal build needs neither `libclang` nor the vendor header, and a CI-able check
   (`cargo build --features bindgen` on the bench) diffs regenerated output against the snapshot to
@@ -930,27 +932,29 @@ written in Phase 6 against the real SDK v1.2.0 header, but its outline is fixed 
 
 Outline of the document:
 
-1. **Deployment** — where `M300Sdk.dll` (name to confirm) must live: next to `quickvib.exe`, a
+1. **Deployment** — where `m300_sdk.dll` must live: next to `quickvib.exe`, a
    directory given by `device.sdkPath` / `QUICKVIB_M300_SDK`, or the default DLL search path.
    Probe order is documented and logged at `debug`.
-2. **Calling convention and marshalling** — `extern "C"` (cdecl) assumed for x64, where it is the
-   only convention; if a 32-bit SDK forces `i686`, `extern "stdcall"` becomes possible and must be
-   confirmed (Q14). String encoding (ANSI vs UTF-8 vs UTF-16), null-termination, and **ownership of
-   returned buffers** recorded explicitly, since getting this wrong corrupts memory silently — in
-   Rust it is undefined behavior with no exception to catch it (§20).
+2. **Calling convention and marshalling** — `extern "C"` (cdecl), confirmed on both the x64 and the
+   x86 build (Q-C). String encoding (ASCII/UTF-8 `char *`, no wide strings), null-termination, and
+   **ownership of returned buffers** recorded explicitly, since getting this wrong corrupts memory
+   silently — in Rust it is undefined behavior with no exception to catch it (§20).
 3. **Entry-point table** — for each function used: exact name, signature, return/error semantics,
-   thread affinity, and whether it blocks. The set QuickVib expects to need is small: initialize
-   library, open/attach device, query identity and capabilities, start/stop streaming, shut down.
-   **Exact names and signatures are unknown until the SDK header is available (Q-A in §21.1).**
-4. **Error mapping table** — native error code → SCPI error code from §9.
-5. **Socket ownership** — whether the SDK opens its own transport or QuickVib's `:9123` listener
-   supplies the data. The plan assumes **QuickVib listens and the SDK is used for control/identity
-   only**; if the SDK owns the socket instead, `quickvib-m300` changes but `DeviceBackend`, every
-   platform-neutral crate, and every test stay untouched. This isolation is the main reason for the
-   abstraction.
+   thread affinity, and whether it blocks. The set QuickVib needs is small: initialize library,
+   create and start the server, take the device handle from the connect callback, query identity and
+   capabilities, configure rate/filter/type/range, start/stop acquisition, shut down. Filled in from
+   the real headers (Q-A, answered in §21.1).
+4. **Error mapping table** — native error code → SCPI error code from §9. Two codes per call: the
+   `M300Result` return and the device's own `uint16_t result_code`.
+5. **Socket ownership** — resolved (Q-B): **the SDK opens and owns the transport.** It binds the
+   listening port, the vibrometer dials in exactly as the brief describes, and samples arrive on a
+   callback rather than on a socket QuickVib holds. As the abstraction was meant to guarantee, this
+   changed `quickvib-m300` alone — `DeviceBackend`, every platform-neutral crate, and every test
+   were untouched.
 6. **Threading rules** — which entry points may be called from any thread, and which require the
-   same thread for open/close pairs. Rust makes this explicit: if the SDK is not thread-safe, the
-   `M300Backend` is `!Sync` and all calls are funnelled onto the reader thread.
+   same thread for open/close pairs. The vendor documents the SDK as thread-safe (per-device locks,
+   replies matched by command id), so `stop` can call into it directly; the pessimism that remains
+   is around the callbacks, which arrive on SDK-owned threads.
 7. **Callback ABI, if any** — if the SDK delivers samples via a C callback, the Rust side must use an
    `extern "C"` shim that immediately `catch_unwind`s (unwinding across an FFI boundary is UB) and
    forwards through a `*mut c_void` user-data pointer.
@@ -1413,10 +1417,10 @@ in either order.
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| M300 SDK v1.2.0 ABI details (entry points, calling convention, string ownership, and especially whether the SDK owns the socket or QuickVib listens) are not in hand. | Phase 6 could need rework. | Keep the native surface behind `DeviceBackend`; keep framing and listening in `quickvib-device` so they survive either answer; confirm before starting Phase 6. |
+| ~~M300 SDK v1.2.0 ABI details are not in hand.~~ **Retired:** the SDK is in hand and `docs/M300-NATIVE.md` records the ABI. | — | The mitigation worked as designed: the answer to "who owns the socket" came back as *the SDK does*, the opposite of the assumption, and the cost was confined to `quickvib-m300`. What remains is the bench list in `docs/M300-NATIVE.md` §9. |
 | **Rust FFI has no marshalling safety net.** A wrong signature or ownership assumption is undefined behavior — memory corruption or a silent wrong answer — where .NET would have thrown. | Corrupted measurements or a hard crash on the bench, potentially intermittent. | `#![forbid(unsafe_code)]` everywhere but `quickvib-m300` (D22); `bindgen`-generated declarations from the real header rather than hand-transcription (§11); a `SAFETY:` comment per block; the crate kept to a few hundred lines; the §11.8 smoke checklist run against real hardware before sign-off. |
 | **Toolchain/ABI mismatch:** a GNU-target exe loading an MSVC-built vendor DLL, or a static-CRT exe exchanging CRT-owned resources with the DLL. | Crashes that only reproduce on the bench. | Ship the MSVC target (D25); require §11.2 to state whether any CRT-owned resource crosses the boundary; if one does, drop `+crt-static` and document the redistributable requirement. |
-| **The SDK may be 32-bit only.** | The whole build must move to `i686-pc-windows-msvc`, and `stdcall` becomes possible. | Q-C asks this before Phase 6. The change is a target triple plus a calling-convention token in `ffi.rs`; nothing else in the workspace is bitness-sensitive — but discovering it late wastes a Phase 6. |
+| ~~**The SDK may be 32-bit only.**~~ **Retired:** the vendor ships both x64 and x86, both MSVC-built, both cdecl. | — | `x86_64-pc-windows-msvc` stands (D25). The bench needs the VC++ 2015–2022 redistributable, which the vendor's DLL imports. |
 | `bindgen` needs `libclang` and the vendor header, so it cannot run in CI. | Generated bindings could drift from the SDK unnoticed. | Commit the generated snapshot as reviewed source; the bench-side `--features bindgen` build regenerates and diffs; the SDK version is asserted at runtime where the ABI exposes it. |
 | Unwinding across the FFI boundary (if the SDK uses callbacks) is UB. | Crash on any panic inside a callback. | Every `extern "C"` shim wraps its body in `catch_unwind` and converts a panic to an error code (§11.7). |
 | `FETC?` on a 5 s × 100 kS/s capture is a ~6 MB single ASCII line; some SCPI clients cap read buffers. | UTS read failures or timeouts. | Offer `TRAC:POIN?` first; stream the response through a `BufWriter` rather than buffering it; keep an IEEE 488.2 definite-length block (`#<n><len><bytes>`) as an additive option (Q3). |
@@ -1434,23 +1438,29 @@ in either order.
 
 ## 21. Open questions
 
-### 21.1 Blocking
+### 21.1 Blocking — all resolved
 
-Nothing blocks starting Phases 0–5: every unresolved item has a recorded default in §4, and each is
-cheap to change because it sits behind a trait or a config field. Three items block **Phase 6**
-specifically:
+Nothing blocked starting Phases 0–5: every unresolved item has a recorded default in §4, and each is
+cheap to change because it sits behind a trait or a config field. Three items used to block
+**Phase 6** specifically. All three are now **answered** from the vendor's `M300SDK_v1.2.0`
+distribution; the evidence and the consequences are written up in `docs/M300-NATIVE.md`, and
+Phase 6 is unblocked.
 
-* **Q-A. M300 SDK v1.2.0 ABI.** The real header (or its documentation) is required: exact exported
-  function names, signatures, calling convention, string encoding and buffer ownership, error-code
-  semantics, and threading rules. Without it, `ffi.rs` cannot be written — and per D21 it will not be
-  faked.
-* **Q-B. Who owns the device socket.** Does the SDK open the transport itself, or does QuickVib's
-  `:9123` listener supply the byte stream and the SDK handle only control/identity? The plan assumes
-  the latter (matching the brief's "M300 connects inbound"), but the answer determines
-  `M300Backend`'s shape. It does not affect any platform-neutral crate or any test.
-* **Q-C. SDK bitness and build toolchain.** Is the SDK DLL x64 or x86-only, and was it built with
-  MSVC or MinGW? This decides the shipped target triple, the calling convention on 32-bit, and
-  whether `+crt-static` is safe (§18.2, D25). Cheap to answer now, expensive to discover in Phase 6.
+* **Q-A. M300 SDK v1.2.0 ABI.** *Answered.* `m300_sdk.dll`, cdecl, ASCII strings, 105 exports of
+  which the headers declare 103; `bindgen` output from the real headers is committed at
+  `crates/quickvib-m300/src/ffi_generated.rs`. Two commands (`m300_set_sample_rate`,
+  `m300_set_data_type`) are exported and documented but declared in no header, so they are declared
+  by hand (`docs/M300-NATIVE.md` §3.1). Nothing is faked, per D21.
+* **Q-B. Who owns the device socket.** *Answered — the SDK does.* `m300_server_create*` binds and
+  listens, the vibrometer dials in as before, and samples arrive on a `CDataCallback` as
+  little-endian `f32` already in physical units. So with `--backend m300` QuickVib must **not** bind
+  `--device-port` itself and the framer is not on that path. As predicted, this changes
+  `M300Backend` only: `DeviceBackend`, every platform-neutral crate and every test stand
+  (`docs/M300-NATIVE.md` §6).
+* **Q-C. SDK bitness and build toolchain.** *Answered.* Both x64 (PE32+) and x86 (PE32) are shipped,
+  both built with **MSVC** (linker 14.41, VS 2022) against `VCRUNTIME140` + UCRT, and the x86 export
+  names are undecorated, so it is cdecl on both. QuickVib stays on `x86_64-pc-windows-msvc` (D25),
+  and the bench needs the VC++ 2015–2022 redistributable for the vendor's DLL.
 
 ### 21.2 Non-blocking (defaults recorded; confirm before v1 sign-off)
 
@@ -1508,7 +1518,7 @@ Explicitly **not** built, by requirement:
 * **DUT vibration control.** No shaker/exciter drive, no stimulus generation on real hardware. The
   mock's synthesized signal is a *test fixture*, not DUT excitation. Also the UTS's job.
 * **Retry logic.** A failed or aborted capture is reported; re-running is the UTS's decision.
-* **A fake/stub native DLL.** No `M300Sdk.dll` shim, no stub `.lib`, and no binary artifacts
+* **A fake/stub native DLL.** No `m300_sdk.dll` shim, no stub `.lib`, and no binary artifacts
   committed. Linux testability comes from the mock backend and from keeping the native surface tiny,
   not from faking the library. (Committing `bindgen`-generated *declarations* is not a fake DLL:
   it is reviewed source describing an interface, with no implementation behind it.)

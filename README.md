@@ -512,15 +512,26 @@ cargo build --release --features m300
 quickvib.exe --project samples\Test.proj --backend m300 --headless
 ```
 
-The SDK DLL is located at runtime, in this order: `device.sdkPath` from the project, the
-`QUICKVIB_M300_SDK` environment variable, the directory containing `quickvib.exe`, then the default
-DLL search path. Nothing is resolved at process start, so a missing SDK yields
-`-241,"Hardware missing"` and a log line naming every path probed — not a process that refuses to
-launch.
+The SDK DLL — `m300_sdk.dll`, from the vendor's `M300SDK_v1.2.0` package, `x64\bin` — is located at
+runtime, in this order: `device.sdkPath` from the project, the `QUICKVIB_M300_SDK` environment
+variable, the directory containing `quickvib.exe`, then the default DLL search path. Nothing is
+resolved at process start, so a missing SDK yields `-241,"Hardware missing"` and a log line naming
+every path probed — not a process that refuses to launch. The host also needs the VC++ 2015–2022
+redistributable, which the vendor's DLL imports.
 
-There is **no fake or stub `M300Sdk.dll` in this repository**, and none will be added. The native
-ABI is captured as a reviewed contract in [`docs/M300-NATIVE.md`](docs/M300-NATIVE.md), verified on a
-Windows bench with the real SDK.
+**Obtaining the SDK.** It is the vendor's distribution and is not redistributed here, not even in
+part: request `M300SDK_v1.2.0.zip` from the instrument supplier. QuickVib is written against the
+headers and DLL in that package, and nothing in this repository needs to be built from it — the
+declarations `bindgen` produced from those headers are committed at
+`crates/quickvib-m300/src/ffi_generated.rs`.
+
+There is **no fake or stub SDK DLL in this repository**, and none will be added; the vendor's real
+DLL is not committed either. The native ABI is captured as a reviewed contract in
+[`docs/M300-NATIVE.md`](docs/M300-NATIVE.md), verified on a Windows bench with the real SDK.
+
+With `--backend m300` the SDK itself binds `--device-port` and accepts the vibrometer's inbound
+connection, so QuickVib does not open that listener — the wire picture is unchanged (the M300 dials
+in), only the owner of the socket differs. With `--backend tcp` QuickVib owns the listener.
 
 ### 9.1 `m300-sim` — simulating the inbound device link
 
@@ -1225,12 +1236,22 @@ cargo build --release --features m300
 quickvib.exe --project samples\Test.proj --backend m300 --headless
 ```
 
-SDK 动态库在运行时按以下顺序查找：工程中的 `device.sdkPath`、环境变量 `QUICKVIB_M300_SDK`、
-`quickvib.exe` 所在目录、系统默认 DLL 搜索路径。进程启动时不做任何解析，因此缺少 SDK 只会得到
-`-241,"Hardware missing"` 以及一条列出所有已尝试路径的日志——而不是一个根本无法启动的进程。
+SDK 动态库 `m300_sdk.dll`（来自厂商 `M300SDK_v1.2.0` 包的 `x64\bin` 目录）在运行时按以下顺序查找：
+工程中的 `device.sdkPath`、环境变量 `QUICKVIB_M300_SDK`、`quickvib.exe` 所在目录、系统默认 DLL 搜索
+路径。进程启动时不做任何解析，因此缺少 SDK 只会得到 `-241,"Hardware missing"` 以及一条列出所有已尝试
+路径的日志——而不是一个根本无法启动的进程。目标机还需安装厂商 DLL 所依赖的 VC++ 2015–2022 运行库。
 
-本仓库中**没有、也不会加入任何假的或桩实现的 `M300Sdk.dll`**。原生 ABI 以契约文档的形式记录在
-[`docs/M300-NATIVE.md`](docs/M300-NATIVE.md) 中，并在装有真实 SDK 的 Windows 机器上验证。
+**如何获取 SDK。** 它属于厂商发行物，本仓库不做任何形式的再分发：请向仪器供货方索取
+`M300SDK_v1.2.0.zip`。QuickVib 针对该包中的头文件与 DLL 编写，但本仓库中没有任何东西需要用它来构建
+——由那些头文件生成的声明已提交在 `crates/quickvib-m300/src/ffi_generated.rs`。
+
+本仓库中**没有、也不会加入任何假的或桩实现的 SDK DLL**，厂商的真实 DLL 同样不入库。原生 ABI 以契约
+文档的形式记录在 [`docs/M300-NATIVE.md`](docs/M300-NATIVE.md) 中，并在装有真实 SDK 的 Windows 机器上
+验证。
+
+使用 `--backend m300` 时，监听 `--device-port` 的是 SDK 自己：由它 bind、accept 测振仪的入站连接，
+QuickVib 不再另开监听。链路方向没变（仍由 M300 主动拨入），变的只是这个 socket 归谁所有。使用
+`--backend tcp` 时监听端口仍由 QuickVib 自己持有。
 
 ### 9.1 `m300-sim`：模拟设备入站链路
 
