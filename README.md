@@ -261,8 +261,8 @@ Exit codes: `0` clean shutdown, `2` bad arguments, `3` port bind failure, `4` pr
 | --- | --- | --- | --- |
 | `--project <path>` | file path | *(auto-load-last)* | Load this project at startup. Failure is fatal (exit `4`) |
 | `--scpi-port <n>` | 1–65535 | *(project, else `5025`)* | SCPI server port (the UTS connects in). Overrides `server.scpiPort` |
-| `--device-port <n>` | 1–65535 | *(project, else `9123`)* | Device server port (the M300 connects in). Overrides `device.port` |
-| `--bind <host>` | IP literal or host name | *(project, else `0.0.0.0`)* | Interface **both** listeners bind. `0.0.0.0` accepts connections from anywhere the network allows; `127.0.0.1` keeps the SCPI and device links on this machine, which is the right choice when the UTS and the M300 (or `m300-sim`) run on the same PC. Overrides `server.bindHost`. An IPv6 literal may be written bare or bracketed (`::1` or `[::1]`) |
+| `--device-port <n>` | 1–65535 | *(project, else `9123`)* | Device server port (the M300 connects in). Overrides `device.port`. With `--backend m300` this is the port handed to the SDK, which binds it instead of QuickVib — see [§9](#9-mock-backend-vs-real-device) |
+| `--bind <host>` | IP literal or host name | *(project, else `0.0.0.0`)* | Interface **both** listeners bind. `0.0.0.0` accepts connections from anywhere the network allows; `127.0.0.1` keeps the SCPI and device links on this machine, which is the right choice when the UTS and the M300 (or `m300-sim`) run on the same PC. Overrides `server.bindHost`. An IPv6 literal may be written bare or bracketed (`::1` or `[::1]`). With `--backend m300` it is also the SDK's bind address |
 | `--headless` | flag | off | No window and no interactive console UI; structured log lines only |
 | `--backend <mock\|tcp\|m300>` | enum | *(project, else `mock`)* | Override the project's backend. `mock` synthesizes samples in process; `tcp` records the little-endian `f32` stream arriving on `--device-port` (a real M300, or `m300-sim`); `m300` uses the native SDK and, on a non-Windows host or in a build without the `m300` feature, is a startup error — never a silent fallback |
 | `--no-auto-load` | flag | off | Suppress auto-load-last, for a clean UTS run |
@@ -298,8 +298,11 @@ bytes per sample, back to back, for as long as the link is up. A run is bounded 
 not wall-clock, with a wall-clock watchdog as the backstop, so captures are deterministic and
 tolerate device jitter.
 
-The device port is bound and framed on every backend. With `--backend mock` the framed samples are
-counted and logged but the mock supplies the capture; with `--backend tcp` they *are* the capture.
+QuickVib binds and frames the device port on both the `mock` and the `tcp` backend. With
+`--backend mock` the framed samples are counted and logged but the mock supplies the capture; with
+`--backend tcp` they *are* the capture. `--backend m300` is the exception: there the SDK binds the
+port and delivers already-framed samples on a callback, so QuickVib starts no listener of its own
+([§9](#9-mock-backend-vs-real-device)).
 
 The flow for one measurement is: load project → `INIT` → samples stream in until
 `duration × sample rate` are collected → the state machine reaches `COMPLETE`, `#REC:DONE` is pushed
@@ -529,9 +532,33 @@ There is **no fake or stub SDK DLL in this repository**, and none will be added;
 DLL is not committed either. The native ABI is captured as a reviewed contract in
 [`docs/M300-NATIVE.md`](docs/M300-NATIVE.md), verified on a Windows bench with the real SDK.
 
+#### Who owns the device port
+
 With `--backend m300` the SDK itself binds `--device-port` and accepts the vibrometer's inbound
-connection, so QuickVib does not open that listener — the wire picture is unchanged (the M300 dials
-in), only the owner of the socket differs. With `--backend tcp` QuickVib owns the listener.
+connection, so QuickVib does not open that listener. The wire picture is unchanged — the M300 still
+dials in — but the owner of the socket differs, and that has consequences worth knowing before the
+first bench run:
+
+| | `mock` / `tcp` | `m300` |
+| --- | --- | --- |
+| Who binds `--device-port` | QuickVib | the SDK, inside `m300_server_create_ex` |
+| What `--bind` does | picks the interface **both** QuickVib listeners use | picks the SCPI interface, and is passed to the SDK as its bind address |
+| Sample path | listener → framer → engine | SDK callback → bounded queue → engine |
+| Startup banner | `device on port 9123` | `device on port 9123 (bound by the SDK)` |
+| `SYST:DEV:CONN?` | the inbound link QuickVib accepted | the SDK's own view of the device (`m300_device_is_connected`) |
+
+QuickVib deliberately does **not** bind the device port on this path: both listeners would be
+fighting for the same address, and whichever lost would report "address already in use" — from the
+SDK that surfaces as `-7 ERR_NETWORK` at open. Starting two QuickVib processes against one port
+still fails for exactly that reason, which is the cheapest way to confirm the port really belongs
+to the SDK. The SCPI server is unaffected: the UTS link is QuickVib's own on every backend, so
+`--scpi-port` behaves identically.
+
+Two smaller consequences of the same split. The link counters in the shutdown summary — connections,
+refusals, framed samples — stay at zero with `--backend m300`, because nothing passes through a
+listener of ours to be counted; the sample count to trust there is `TRAC:POIN?`. And
+`device.allowedPeers` is not enforced on this path either: it is applied by QuickVib's listener, and
+the SDK has no equivalent, so restrict the link with a firewall rule instead.
 
 ### 9.1 `m300-sim` — simulating the inbound device link
 
@@ -717,7 +744,8 @@ is what ships.
 | The dark window is unreadable on a bright bench | The **浅色 / 深色 · Light / Dark** switch is immediately left of the language switch; the choice is remembered in `ui-theme.txt` under the same state directory. Dark is the default on first launch and after that file is deleted ([§2.1](#theme)) |
 | Exit code `2` | Bad arguments — unknown flag, missing value, or a port outside 1–65535. Usage is on stderr |
 | Exit code `4` | `--project` was given but the file is missing or fails schema validation. The log line carries the JSON line and column |
-| `SYST:DEV:CONN?` returns `0` | The M300 has not dialed in. Check that it is powered, on the same network, configured to connect to this host on `9123`, that no firewall blocks the inbound connection, and that `device.allowedPeers` (if set) includes its address. With `--backend mock` this is always `1`, because the mock needs no link |
+| `SYST:DEV:CONN?` returns `0` | The M300 has not dialed in. Check that it is powered, on the same network, configured to connect to this host on `9123`, that no firewall blocks the inbound connection, and that `device.allowedPeers` (if set) includes its address. With `--backend mock` this is always `1`, because the mock needs no link. With `--backend m300` the answer is the SDK's own `m300_device_is_connected`, so a `0` there means the SDK has accepted no device — the peer allow-list is not involved |
+| A `--backend m300` run fails at startup with `-7 ERR_NETWORK` | Something else already holds `--device-port`, so the SDK could not bind it. The usual culprits are a second QuickVib instance and a leftover `--backend tcp` run; QuickVib itself does not bind that port on the `m300` path ([§9](#9-mock-backend-vs-real-device)) |
 | `m300-sim` exits `3` | Nothing is listening on `--port`. Start QuickVib first, and check that its `--device-port` is the port the simulator is dialing |
 | A `--backend tcp` run trips the watchdog | The simulator's `--rate` is below the project's `device.sampleRateHz`, so the expected sample count never arrives in time. Match the two, or raise `recording.timeoutMultiplier` |
 | `-241,"Hardware missing"` at `INIT` | Either no device is connected, or the SDK DLL could not be loaded. The log lists every path probed and the OS error for each. Confirm the DLL location per §9 |
@@ -996,8 +1024,8 @@ QuickVib 在两条链路上**都是 TCP 服务端**，从不主动外连。进�
 | --- | --- | --- | --- |
 | `--project <path>` | 文件路径 | *(自动加载上次工程)* | 启动时加载该工程，失败即致命错误（退出码 `4`） |
 | `--scpi-port <n>` | 1–65535 | *(工程配置，否则 `5025`)* | SCPI 服务端口（UTS 连入），覆盖 `server.scpiPort` |
-| `--device-port <n>` | 1–65535 | *(工程配置，否则 `9123`)* | 设备服务端口（M300 连入），覆盖 `device.port` |
-| `--bind <host>` | IP 字面量或主机名 | *(工程配置，否则 `0.0.0.0`)* | **两个**监听器绑定的网卡地址。`0.0.0.0` 表示网络可达的任何来源都能连入；`127.0.0.1` 则把 SCPI 与设备两条链路都限制在本机——当 UTS 与 M300（或 `m300-sim`）都在同一台 PC 上时应当这样配置。覆盖 `server.bindHost`。IPv6 字面量可写作 `::1` 或 `[::1]` |
+| `--device-port <n>` | 1–65535 | *(工程配置，否则 `9123`)* | 设备服务端口（M300 连入），覆盖 `device.port`。使用 `--backend m300` 时，这个端口交给 SDK，由 SDK 而非 QuickVib 去 bind——参见 [§9](#9-模拟后端与真实设备) |
+| `--bind <host>` | IP 字面量或主机名 | *(工程配置，否则 `0.0.0.0`)* | **两个**监听器绑定的网卡地址。`0.0.0.0` 表示网络可达的任何来源都能连入；`127.0.0.1` 则把 SCPI 与设备两条链路都限制在本机——当 UTS 与 M300（或 `m300-sim`）都在同一台 PC 上时应当这样配置。覆盖 `server.bindHost`。IPv6 字面量可写作 `::1` 或 `[::1]`。使用 `--backend m300` 时，它同时也是 SDK 的 bind 地址 |
 | `--headless` | 开关 | 关 | 不打开窗口，仅输出结构化日志 |
 | `--backend <mock\|tcp\|m300>` | 枚举 | *(工程配置，否则 `mock`)* | 覆盖工程中的后端选择。`mock` 在进程内合成信号；`tcp` 记录从 `--device-port` 连入的小端 `f32` 数据流（真实 M300，或 `m300-sim`）；`m300` 走原生 SDK，在非 Windows 主机、或未启用 `m300` feature 的构建上指定它会直接启动失败，绝不静默回退 |
 | `--no-auto-load` | 开关 | 关 | 禁用「自动加载上次工程」，保证运行环境干净 |
@@ -1031,8 +1059,10 @@ QuickVib 在两条链路上**都是 TCP 服务端**，从不主动外连。进�
 还在就一直发。一次采集以**采样点数**（而非墙上时钟）为结束条件，另有墙上时钟看门狗兜底，因此结果是
 确定性的，同时容忍设备抖动。
 
-无论使用哪个后端，设备端口都会被绑定并完成 framing。`--backend mock` 下这些还原出来的采样只被计数和
-记录日志，采集数据由 mock 提供；`--backend tcp` 下它们**就是**采集数据。
+在 `mock` 与 `tcp` 两个后端下，设备端口都由 QuickVib 绑定并完成 framing。`--backend mock` 下这些还原
+出来的采样只被计数和记录日志，采集数据由 mock 提供；`--backend tcp` 下它们**就是**采集数据。
+`--backend m300` 是例外：那里由 SDK 绑定端口，并通过回调交付已经成帧的采样，QuickVib 不再自建监听器
+（[§9](#9-模拟后端与真实设备)）。
 
 一次测量的完整流程是：加载工程 → `INIT` → 采样持续流入，直到收满 `时长 × 采样率` 个点 → 状态机进入
 `COMPLETE`，向所有已连接会话推送 `#REC:DONE`，`REC:WAIT?` 解除阻塞 → `CALC:MEAS:*?` 返回标量结果 →
@@ -1249,9 +1279,29 @@ SDK 动态库 `m300_sdk.dll`（来自厂商 `M300SDK_v1.2.0` 包的 `x64\bin` �
 文档的形式记录在 [`docs/M300-NATIVE.md`](docs/M300-NATIVE.md) 中，并在装有真实 SDK 的 Windows 机器上
 验证。
 
+#### 设备端口归谁所有
+
 使用 `--backend m300` 时，监听 `--device-port` 的是 SDK 自己：由它 bind、accept 测振仪的入站连接，
-QuickVib 不再另开监听。链路方向没变（仍由 M300 主动拨入），变的只是这个 socket 归谁所有。使用
-`--backend tcp` 时监听端口仍由 QuickVib 自己持有。
+QuickVib 不再另开监听。链路方向没变（仍由 M300 主动拨入），变的只是这个 socket 归谁所有——而这个差别
+在上机之前值得先弄清楚：
+
+| | `mock` / `tcp` | `m300` |
+| --- | --- | --- |
+| 谁 bind `--device-port` | QuickVib | SDK，在 `m300_server_create_ex` 内部 |
+| `--bind` 的作用 | 选定 QuickVib **两个**监听器使用的网卡 | 选定 SCPI 监听网卡，并作为 bind 地址传给 SDK |
+| 采样路径 | 监听器 → framer → 引擎 | SDK 回调 → 有界队列 → 引擎 |
+| 启动横幅 | `device on port 9123` | `device on port 9123 (bound by the SDK)` |
+| `SYST:DEV:CONN?` | QuickVib 接受的入站链路 | SDK 自己看到的设备状态（`m300_device_is_connected`） |
+
+在这条路径上 QuickVib **刻意不去** bind 设备端口：否则两个监听器会争抢同一地址，失败的一方报「地址已被
+占用」——从 SDK 侧看就是 open 时返回 `-7 ERR_NETWORK`。同一个端口上启动两个 QuickVib 进程同样会因此失
+败，这也是确认该端口确实归 SDK 所有的最省事的办法。SCPI 服务不受影响：无论哪个后端，UTS 那条链路始终
+由 QuickVib 自己持有，`--scpi-port` 行为完全一致。
+
+由此还引出两个小结论。退出摘要中的链路计数——连接数、拒绝数、还原出的采样数——在 `--backend m300` 下
+恒为零，因为这些流量根本不经过我们的监听器，无从计数；此时应以 `TRAC:POIN?` 为准。同理，
+`device.allowedPeers` 在这条路径上也不生效：它由 QuickVib 的监听器实施，而 SDK 没有对应能力，请改用
+防火墙规则限制来源。
 
 ### 9.1 `m300-sim`：模拟设备入站链路
 
@@ -1422,7 +1472,8 @@ cargo build --release --target x86_64-pc-windows-gnu --locked
 | 明亮环境下深色界面看不清 | 语言开关左侧就是 **浅色 / 深色** 开关；所选主题记录在同一状态目录下的 `ui-theme.txt`。首次启动、以及删除该文件之后，默认都是深色（[§2.1](#主题切换)） |
 | 退出码 `2` | 参数错误——未知参数、缺少取值，或端口不在 1–65535。用法信息输出在 stderr |
 | 退出码 `4` | 指定了 `--project` 但文件不存在或 schema 校验失败。日志中包含出错的 JSON 行号与列号 |
-| `SYST:DEV:CONN?` 返回 `0` | M300 尚未连入。检查设备是否上电、是否与主机同网段、是否配置为连接本机 `9123`、防火墙是否拦截入站连接，以及 `device.allowedPeers`（若配置）是否包含其地址。`--backend mock` 下该查询恒为 `1`，因为模拟后端不需要链路 |
+| `SYST:DEV:CONN?` 返回 `0` | M300 尚未连入。检查设备是否上电、是否与主机同网段、是否配置为连接本机 `9123`、防火墙是否拦截入站连接，以及 `device.allowedPeers`（若配置）是否包含其地址。`--backend mock` 下该查询恒为 `1`，因为模拟后端不需要链路。`--backend m300` 下该查询直接反映 SDK 的 `m300_device_is_connected`，因此返回 `0` 表示 SDK 尚未接受任何设备，与来源白名单无关 |
+| `--backend m300` 启动时报 `-7 ERR_NETWORK` | `--device-port` 已被其他进程占用，SDK 无法 bind。常见原因是又起了一个 QuickVib 实例，或残留着一个 `--backend tcp` 进程；在 `m300` 路径上 QuickVib 自己并不会去 bind 这个端口（[§9](#9-模拟后端与真实设备)） |
 | `m300-sim` 退出码 `3` | `--port` 上没有任何进程在监听。请先启动 QuickVib，并确认其 `--device-port` 与模拟器拨入的端口一致 |
 | `--backend tcp` 采集触发看门狗 | 模拟器的 `--rate` 低于工程的 `device.sampleRateHz`，预期点数无法及时收满。让两者一致，或调大 `recording.timeoutMultiplier` |
 | `INIT` 时返回 `-241,"Hardware missing"` | 要么没有设备连入，要么 SDK 动态库加载失败。日志会列出所有尝试过的路径及各自的系统错误。按第 9 节确认 DLL 位置 |
